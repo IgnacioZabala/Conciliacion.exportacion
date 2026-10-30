@@ -142,10 +142,12 @@ def generar_pdf_impresion(orden_id, exp_data):
         if liq:
             tc_banco = liq.get("tc_banco", 0.0)
             swift_ars = usd_swift * tc_banco
-            gastos_swift_ars = gastos_swift * tc_banco
             comision_ars = liq.get("usd_comision", 0.0) * tc_banco
             rg2408_ars = liq.get("usd_rg2408", 0.0) * tc_banco
             iva_ars = liq.get("usd_iva", 0.0) * tc_banco
+            
+            # Total de gastos bancarios (comisión + rg2408 + iva)
+            total_gastos_bancarios = comision_ars + rg2408_ars + iva_ars
             
             brecha = tc_banco - tc_factura
             resultado_ars = usd_swift * brecha
@@ -155,9 +157,8 @@ def generar_pdf_impresion(orden_id, exp_data):
 
             pdf.cell(115, 6, txt=f"Total operacion: ${formato_arg(swift_ars)} ARS (USD ${formato_arg(usd_swift)})", ln=True)
             pdf.cell(115, 6, txt=f"1- Comision: ${formato_arg(comision_ars)} ARS", ln=True)
-            pdf.cell(115, 6, txt=f"2- Gastos de Transaccion: ${formato_arg(gastos_swift_ars)} ARS", ln=True)
-            pdf.cell(115, 6, txt=f"RG2408: ${formato_arg(rg2408_ars)} ARS", ln=True)
-            pdf.cell(115, 6, txt=f"IVA 21%: ${formato_arg(iva_ars)} ARS", ln=True)
+            pdf.cell(115, 6, txt=f"2- Gastos de Transaccion: ${formato_arg(total_gastos_bancarios)} ARS", ln=True)
+            pdf.cell(115, 6, txt=f"   (Comision: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} | IVA: ${formato_arg(iva_ars)})", ln=True)
             pdf.cell(115, 6, txt=f"3- Resultado financiero: {txt_res}", ln=True)
         else:
             pdf.cell(115, 6, txt=f"Total operacion: USD ${formato_arg(usd_swift)}", ln=True)
@@ -230,7 +231,6 @@ with st.sidebar:
     
     for orden, data in st.session_state['exportaciones'].items():
         total_factura = data.get("factura", {}).get("total_usd", 0.0)
-        # Sumamos neto + gastos swift para el % de conciliación
         total_cobrado = sum(s.get("usd_swift", 0.0) + s.get("gastos_swift", 0.0) for s in data.get("swifts", []))
         
         if total_factura > 0:
@@ -317,10 +317,11 @@ if st.session_state['orden_actual']:
                 tc_banco = liq.get("tc_banco", 0.0)
                 
                 swift_ars = usd_swift * tc_banco
-                gastos_swift_ars = gastos_swift * tc_banco
                 comision_ars = liq.get("usd_comision", 0.0) * tc_banco
                 rg2408_ars = liq.get("usd_rg2408", 0.0) * tc_banco
                 iva_ars = liq.get("usd_iva", 0.0) * tc_banco
+                
+                total_gastos_bancarios = comision_ars + rg2408_ars + iva_ars
                 
                 brecha = tc_banco - tc_factura
                 resultado_ars = usd_swift * brecha
@@ -329,15 +330,14 @@ if st.session_state['orden_actual']:
                 else: txt_res = f"${formato_arg(resultado_ars)} ARS"
 
                 st.markdown(f"**Total operación:** ${formato_arg(swift_ars)} ARS (USD ${formato_arg(usd_swift)})")
-                st.markdown(f"**Comisión:** ${formato_arg(comision_ars)} ARS")
-                st.markdown(f"**Gastos de Transacción (Swift):** ${formato_arg(gastos_swift_ars)} ARS")
-                st.markdown(f"**RG2408:** ${formato_arg(rg2408_ars)} ARS")
-                st.markdown(f"**IVA 21%:** ${formato_arg(iva_ars)} ARS")
-                st.markdown(f"**Resultado financiero:** {txt_res}")
+                st.markdown(f"**1- Comisión:** ${formato_arg(comision_ars)} ARS")
+                st.markdown(f"**2- Gastos de Transacción:** ${formato_arg(total_gastos_bancarios)} ARS  \n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*(Comisión: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} | IVA: ${formato_arg(iva_ars)})*")
+                st.markdown(f"**3- Resultado financiero:** {txt_res}")
             else:
                 st.markdown(f"**Total operación:** USD ${formato_arg(usd_swift)}")
-                st.markdown(f"**Gastos de Transacción (Swift):** USD ${formato_arg(gastos_swift)}")
-                st.warning("*(Falta cargar el Aviso de Crédito correspondiente para pesificar)*")
+                st.markdown(f"**1- Comisión:** (Falta Aviso de Crédito)")
+                st.markdown(f"**2- Gastos de Transacción:** USD ${formato_arg(gastos_swift)}")
+                st.markdown(f"**3- Resultado financiero:** (Falta Aviso de Crédito)")
             st.write("")
         
         # VALIDACIÓN MATEMÁTICA UI
