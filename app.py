@@ -119,7 +119,9 @@ def generar_pdf_impresion(orden_id, exp_data):
     pdf.cell(0, 6, txt=f"Cliente: {cliente}", ln=True)
     pdf.cell(0, 6, txt=f"Monto: USD ${formato_arg(total_factura_usd)} | Tipo de Cambio (BNA): {formato_arg(tc_factura)}", ln=True)
     pdf.line(10, pdf.get_y()+2, 200, pdf.get_y()+2)
-    pdf.ln(8)
+    
+    # Mayor espacio entre encabezado y el primer bloque
+    pdf.ln(15)
 
     swifts_guardados = exp_data.get("swifts", [])
     liquidaciones_guardadas = exp_data.get("liquidaciones", [])
@@ -153,18 +155,18 @@ def generar_pdf_impresion(orden_id, exp_data):
             else:
                 txt_res = f"${formato_arg(resultado_ars)} ARS"
 
-            pdf.cell(115, 6, txt=f"Swift (Operacion): ${formato_arg(swift_ars)} ARS", ln=True)
+            pdf.cell(115, 6, txt=f"Total operacion: ${formato_arg(swift_ars)} ARS (USD ${formato_arg(usd_swift)})", ln=True)
             pdf.cell(115, 6, txt=f"Gastos de Transaccion: ${formato_arg(gastos_swift_ars)} ARS", ln=True)
             pdf.cell(115, 6, txt=f"Comision: ${formato_arg(comision_ars)} ARS", ln=True)
             pdf.cell(115, 6, txt=f"RG2408: ${formato_arg(rg2408_ars)} ARS", ln=True)
             pdf.cell(115, 6, txt=f"IVA 21%: ${formato_arg(iva_ars)} ARS", ln=True)
             pdf.cell(115, 6, txt=f"Resultado financiero: {txt_res}", ln=True)
         else:
-            pdf.cell(115, 6, txt=f"Swift (Operacion): USD ${formato_arg(usd_swift)}", ln=True)
+            pdf.cell(115, 6, txt=f"Total operacion: USD ${formato_arg(usd_swift)}", ln=True)
             pdf.cell(115, 6, txt=f"Gastos de Transaccion: USD ${formato_arg(gastos_swift)}", ln=True)
             pdf.cell(115, 6, txt="(Falta cargar el Aviso de Credito para pesificar)", ln=True)
 
-        # SELLO CONTABLE (Sin el 20)
+        # SELLO CONTABLE
         x_sello = 130
         w_sello = 70
         h_sello = 32
@@ -181,8 +183,9 @@ def generar_pdf_impresion(orden_id, exp_data):
         pdf.set_xy(x_sello + 3, y_start + 23)
         pdf.cell(w_sello, 6, txt="Asiento: ...................................", ln=True)
         
+        # Mayor espacio entre el bloque actual y el siguiente (Restante)
         y_final = max(pdf.get_y(), y_start + h_sello)
-        pdf.set_y(y_final + 10)
+        pdf.set_y(y_final + 20)
         
     return bytes(pdf.output())
 
@@ -203,7 +206,6 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Exportaciones Guardadas:**")
     
-    # Renderizar botones con % de conciliación
     for orden, data in st.session_state['exportaciones'].items():
         total_factura = data.get("factura", {}).get("total_usd", 0.0)
         total_cobrado = sum(s.get("usd_swift", 0.0) for s in data.get("swifts", []))
@@ -217,7 +219,7 @@ with st.sidebar:
             else:
                 icono = "🔴 0%"
         else:
-            icono = "⚪ S/F" # Sin Factura
+            icono = "⚪ S/F"
             
         if st.button(f"{icono} | {orden}", key=f"btn_{orden}", use_container_width=True):
             st.session_state['orden_actual'] = orden
@@ -291,7 +293,6 @@ if st.session_state['orden_actual']:
             if liq:
                 tc_banco = liq.get("tc_banco", 0.0)
                 
-                # Conversión a pesos
                 swift_ars = usd_swift * tc_banco
                 gastos_swift_ars = gastos_swift * tc_banco
                 comision_ars = liq.get("usd_comision", 0.0) * tc_banco
@@ -306,19 +307,18 @@ if st.session_state['orden_actual']:
                 else:
                     txt_res = f"${formato_arg(resultado_ars)} ARS"
 
-                st.markdown(f"**Swift (Operación):** ${formato_arg(swift_ars)} ARS")
+                st.markdown(f"**Total operación:** ${formato_arg(swift_ars)} ARS (USD ${formato_arg(usd_swift)})")
                 st.markdown(f"**Gastos de Transacción (Swift):** ${formato_arg(gastos_swift_ars)} ARS")
                 st.markdown(f"**Comisión:** ${formato_arg(comision_ars)} ARS")
                 st.markdown(f"**RG2408:** ${formato_arg(rg2408_ars)} ARS")
                 st.markdown(f"**IVA 21%:** ${formato_arg(iva_ars)} ARS")
                 st.markdown(f"**Resultado financiero:** {txt_res}")
             else:
-                st.markdown(f"**Swift (Operación):** USD ${formato_arg(usd_swift)}")
+                st.markdown(f"**Total operación:** USD ${formato_arg(usd_swift)}")
                 st.markdown(f"**Gastos de Transacción (Swift):** USD ${formato_arg(gastos_swift)}")
                 st.warning("*(Falta cargar el Aviso de Crédito correspondiente para pesificar)*")
             st.write("")
             
-        # BOTÓN DESCARGA PDF
         st.divider()
         col_pdf, _ = st.columns([0.4, 0.6])
         with col_pdf:
