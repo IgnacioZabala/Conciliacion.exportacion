@@ -103,32 +103,40 @@ if st.session_state['orden_actual']:
             if datos["tipo"] == "Factura":
                 exp_data["tc_factura"] = datos.get("tc_factura", 0.0)
             elif datos["tipo"] == "Swift":
+                if "swifts" not in exp_data:
+                    exp_data["swifts"] = []
                 exp_data["swifts"].append(datos)
             elif datos["tipo"] == "Liquidacion":
+                if "liquidaciones" not in exp_data:
+                    exp_data["liquidaciones"] = []
                 exp_data["liquidaciones"].append(datos)
         st.success("Archivos procesados y guardados en memoria.")
         st.rerun()
 
     st.divider()
 
+    # Variables con .get() para evitar KeyErrors con datos viejos[cite: 10]
+    tc_factura = exp_data.get("tc_factura", 0.0)
+    swifts_guardados = exp_data.get("swifts", [])
+    liquidaciones_guardadas = exp_data.get("liquidaciones", [])
+
     # Visualización de datos procesados
-    if exp_data["tc_factura"] > 0 and exp_data["swifts"]:
+    if tc_factura > 0 and swifts_guardados:
         # Ordenar para mostrar "Anticipo" primero
-        swifts_ordenados = sorted(exp_data["swifts"], key=lambda x: 0 if x.get("etiqueta") == "Anticipo" else 1)
+        swifts_ordenados = sorted(swifts_guardados, key=lambda x: 0 if x.get("etiqueta") == "Anticipo" else 1)
         
         for swift in swifts_ordenados:
             etiqueta = swift.get("etiqueta", "Cobro")
             usd_swift = swift.get("usd_swift", 0.0)
             
             # Buscar liquidación asociada
-            liq = next((l for l in exp_data["liquidaciones"] if abs(l.get("usd_liquidado", 0) - usd_swift) < 1.0), None)
+            liq = next((l for l in liquidaciones_guardadas if abs(l.get("usd_liquidado", 0) - usd_swift) < 1.0), None)
             
             st.subheader(f"{etiqueta}:")
             st.markdown(f"**Swift** ${usd_swift:,.2f}")
             
             if liq:
                 tc_banco = liq.get("tc_banco", 0.0)
-                tc_fact = exp_data["tc_factura"]
                 
                 # Conversión de gastos a pesos
                 comision_ars = liq.get("usd_comision", 0.0) * tc_banco
@@ -136,7 +144,7 @@ if st.session_state['orden_actual']:
                 iva_ars = liq.get("usd_iva", 0.0) * tc_banco
                 
                 # Resultado financiero
-                brecha = tc_banco - tc_fact
+                brecha = tc_banco - tc_factura
                 resultado_ars = usd_swift * brecha
                 
                 if resultado_ars > 0:
@@ -155,7 +163,7 @@ if st.session_state['orden_actual']:
             
             st.write("")
             
-    elif not exp_data["tc_factura"]:
+    elif not tc_factura:
         st.info("💡 Asegúrate de cargar la Factura de Exportación.")
 else:
     st.info("👈 Crea o selecciona una exportación en el panel lateral.")
