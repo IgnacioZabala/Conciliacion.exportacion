@@ -119,18 +119,18 @@ def generar_pdf_impresion(orden_id, exp_data):
     pdf.cell(0, 6, txt=f"Cliente: {cliente}", ln=True)
     pdf.cell(0, 6, txt=f"Monto: USD ${formato_arg(total_factura_usd)} | Tipo de Cambio (BNA): {formato_arg(tc_factura)}", ln=True)
     pdf.line(10, pdf.get_y()+2, 200, pdf.get_y()+2)
-    
-    # Mayor espacio entre encabezado y el primer bloque
-    pdf.ln(15)
+    pdf.ln(10)
 
     swifts_guardados = exp_data.get("swifts", [])
     liquidaciones_guardadas = exp_data.get("liquidaciones", [])
     swifts_ordenados = sorted(swifts_guardados, key=lambda x: 0 if x.get("etiqueta") == "Anticipo" else 1)
+    total_instruido = 0.0
 
     for swift in swifts_ordenados:
         etiqueta = swift.get("etiqueta", "Cobro")
         usd_swift = swift.get("usd_swift", 0.0)
         gastos_swift = swift.get("gastos_swift", 0.0)
+        total_instruido += (usd_swift + gastos_swift)
         
         liq = next((l for l in liquidaciones_guardadas if abs(l.get("usd_liquidado", 0) - usd_swift) < 1.0), None)
         
@@ -150,21 +150,20 @@ def generar_pdf_impresion(orden_id, exp_data):
             brecha = tc_banco - tc_factura
             resultado_ars = usd_swift * brecha
             
-            if resultado_ars < 0:
-                txt_res = f"-${formato_arg(abs(resultado_ars))} ARS"
-            else:
-                txt_res = f"${formato_arg(resultado_ars)} ARS"
+            if resultado_ars < 0: txt_res = f"-${formato_arg(abs(resultado_ars))} ARS"
+            else: txt_res = f"${formato_arg(resultado_ars)} ARS"
 
             pdf.cell(115, 6, txt=f"Total operacion: ${formato_arg(swift_ars)} ARS (USD ${formato_arg(usd_swift)})", ln=True)
-            pdf.cell(115, 6, txt=f"Gastos de Transaccion: ${formato_arg(gastos_swift_ars)} ARS", ln=True)
-            pdf.cell(115, 6, txt=f"Comision: ${formato_arg(comision_ars)} ARS", ln=True)
+            pdf.cell(115, 6, txt=f"1- Comision: ${formato_arg(comision_ars)} ARS", ln=True)
+            pdf.cell(115, 6, txt=f"2- Gastos de Transaccion: ${formato_arg(gastos_swift_ars)} ARS", ln=True)
             pdf.cell(115, 6, txt=f"RG2408: ${formato_arg(rg2408_ars)} ARS", ln=True)
             pdf.cell(115, 6, txt=f"IVA 21%: ${formato_arg(iva_ars)} ARS", ln=True)
-            pdf.cell(115, 6, txt=f"Resultado financiero: {txt_res}", ln=True)
+            pdf.cell(115, 6, txt=f"3- Resultado financiero: {txt_res}", ln=True)
         else:
             pdf.cell(115, 6, txt=f"Total operacion: USD ${formato_arg(usd_swift)}", ln=True)
-            pdf.cell(115, 6, txt=f"Gastos de Transaccion: USD ${formato_arg(gastos_swift)}", ln=True)
-            pdf.cell(115, 6, txt="(Falta cargar el Aviso de Credito para pesificar)", ln=True)
+            pdf.cell(115, 6, txt=f"1- Comision: (Falta Aviso de Credito)", ln=True)
+            pdf.cell(115, 6, txt=f"2- Gastos de Transaccion: USD ${formato_arg(gastos_swift)}", ln=True)
+            pdf.cell(115, 6, txt="3- Resultado financiero: (Falta Aviso de Credito)", ln=True)
 
         # SELLO CONTABLE
         x_sello = 130
@@ -183,10 +182,33 @@ def generar_pdf_impresion(orden_id, exp_data):
         pdf.set_xy(x_sello + 3, y_start + 23)
         pdf.cell(w_sello, 6, txt="Asiento: ...................................", ln=True)
         
-        # Mayor espacio entre el bloque actual y el siguiente (Restante)
         y_final = max(pdf.get_y(), y_start + h_sello)
-        pdf.set_y(y_final + 20)
+        pdf.set_y(y_final + 15)
+
+    # BLOQUE DE VALIDACIÓN MATEMÁTICA EN PDF
+    if total_factura_usd > 0 and total_instruido > 0:
+        pdf.ln(5)
+        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+        pdf.ln(5)
+        pdf.set_font("helvetica", "B", 11)
+        pdf.cell(0, 6, txt="Validacion de Cobro Total:", ln=True)
+        pdf.set_font("helvetica", "", 10)
         
+        for swift in swifts_ordenados:
+            s_neto = swift.get("usd_swift", 0.0)
+            s_gasto = swift.get("gastos_swift", 0.0)
+            pdf.cell(0, 6, txt=f"- {swift.get('etiqueta')}: USD ${formato_arg(s_neto)} (Neto) + USD ${formato_arg(s_gasto)} (Swift) = USD ${formato_arg(s_neto + s_gasto)}", ln=True)
+            
+        pdf.ln(3)
+        pdf.set_font("helvetica", "B", 10)
+        pdf.cell(0, 6, txt=f"Total Pagado por Cliente: USD ${formato_arg(total_instruido)}", ln=True)
+        pdf.cell(0, 6, txt=f"Total Facturado: USD ${formato_arg(total_factura_usd)}", ln=True)
+        
+        if abs(total_factura_usd - total_instruido) < 0.01:
+            pdf.cell(0, 8, txt="ESTADO: 100% COBRADO (Los montos coinciden exactamente)", ln=True)
+        else:
+            pdf.cell(0, 8, txt=f"ESTADO: PENDIENTE (Diferencia de USD ${formato_arg(total_factura_usd - total_instruido)})", ln=True)
+
     return bytes(pdf.output())
 
 
@@ -208,7 +230,8 @@ with st.sidebar:
     
     for orden, data in st.session_state['exportaciones'].items():
         total_factura = data.get("factura", {}).get("total_usd", 0.0)
-        total_cobrado = sum(s.get("usd_swift", 0.0) for s in data.get("swifts", []))
+        # Sumamos neto + gastos swift para el % de conciliación
+        total_cobrado = sum(s.get("usd_swift", 0.0) + s.get("gastos_swift", 0.0) for s in data.get("swifts", []))
         
         if total_factura > 0:
             pct = (total_cobrado / total_factura) * 100
@@ -302,14 +325,12 @@ if st.session_state['orden_actual']:
                 brecha = tc_banco - tc_factura
                 resultado_ars = usd_swift * brecha
                 
-                if resultado_ars < 0:
-                    txt_res = f"-${formato_arg(abs(resultado_ars))} ARS"
-                else:
-                    txt_res = f"${formato_arg(resultado_ars)} ARS"
+                if resultado_ars < 0: txt_res = f"-${formato_arg(abs(resultado_ars))} ARS"
+                else: txt_res = f"${formato_arg(resultado_ars)} ARS"
 
                 st.markdown(f"**Total operación:** ${formato_arg(swift_ars)} ARS (USD ${formato_arg(usd_swift)})")
-                st.markdown(f"**Gastos de Transacción (Swift):** ${formato_arg(gastos_swift_ars)} ARS")
                 st.markdown(f"**Comisión:** ${formato_arg(comision_ars)} ARS")
+                st.markdown(f"**Gastos de Transacción (Swift):** ${formato_arg(gastos_swift_ars)} ARS")
                 st.markdown(f"**RG2408:** ${formato_arg(rg2408_ars)} ARS")
                 st.markdown(f"**IVA 21%:** ${formato_arg(iva_ars)} ARS")
                 st.markdown(f"**Resultado financiero:** {txt_res}")
@@ -318,8 +339,28 @@ if st.session_state['orden_actual']:
                 st.markdown(f"**Gastos de Transacción (Swift):** USD ${formato_arg(gastos_swift)}")
                 st.warning("*(Falta cargar el Aviso de Crédito correspondiente para pesificar)*")
             st.write("")
-            
+        
+        # VALIDACIÓN MATEMÁTICA UI
         st.divider()
+        st.subheader("📊 Resumen de Validación")
+        total_instruido = 0.0
+        for swift in swifts_ordenados:
+            s_neto = swift.get("usd_swift", 0.0)
+            s_gasto = swift.get("gastos_swift", 0.0)
+            total_instruido += (s_neto + s_gasto)
+            st.markdown(f"- **{swift.get('etiqueta')}**: USD ${formato_arg(s_neto)} (Neto) + USD ${formato_arg(s_gasto)} (Gasto Swift) = **USD ${formato_arg(s_neto + s_gasto)}**")
+        
+        st.markdown(f"**Total Pagado por el Cliente:** USD ${formato_arg(total_instruido)}")
+        st.markdown(f"**Total Facturado:** USD ${formato_arg(total_usd_factura)}")
+        
+        if abs(total_usd_factura - total_instruido) < 0.01:
+            st.success("✅ **La exportación está 100% cobrada.** (Los montos coinciden exactamente).")
+        else:
+            diferencia = total_usd_factura - total_instruido
+            st.warning(f"⚠️ **Diferencia Pendiente:** USD ${formato_arg(diferencia)}")
+            
+        # BOTÓN DESCARGA PDF
+        st.write("")
         col_pdf, _ = st.columns([0.4, 0.6])
         with col_pdf:
             pdf_bytes = generar_pdf_impresion(orden_id, exp_data)
