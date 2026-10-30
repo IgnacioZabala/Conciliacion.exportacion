@@ -1,108 +1,188 @@
 import streamlit as st
+import pandas as pd
 import pdfplumber
 import re
-import pandas as pd
+import io
 
-st.set_page_config(page_title="Conciliador de Exportaciones", layout="wide")
+# Configuración de página
+st.set_page_config(page_title="Coopagro - Conciliación Comex", layout="wide", initial_sidebar_state="expanded")
 
-def extract_factura_data(pdf_file):
-    text = ""
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text()
-    
-    # Buscar importe total y tipo de cambio
-    total_match = re.search(r'Importe Total:\s*USD\s*([\d.,]+)', text)
-    tc_match = re.search(r'Tipo de Cambio:\s*([\d.,]+)', text)
-    
-    total_usd = float(total_match.group(1).replace('.', '').replace(',', '.')) if total_match else 0.0
-    tc_factura = float(tc_match.group(1).replace('.', '').replace(',', '.')) if tc_match else 0.0
-    
-    return total_usd, tc_factura
+# Inicialización del estado de la aplicación
+if 'exportaciones' not in st.session_state:
+    st.session_state['exportaciones'] = {}
+if 'orden_actual' not in st.session_state:
+    st.session_state['orden_actual'] = None
 
-def extract_swift_data(pdf_file):
-    text = ""
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text()
+# --- FUNCIONES DE EXTRACCIÓN DE PDF ---
+def procesar_pdf(archivo):
+    texto_completo = ""
+    with pdfplumber.open(archivo) as pdf:
+        for pagina in pdf.pages:
+            texto_completo += pagina.extract_text() + "\n"
+    
+    datos = {"tipo": "Desconocido"}
+    
+    # Detección y extracción de Factura de Exportación
+    if "FACTURA DE EXPORTACIÓN" in texto_completo.upper():
+        datos["tipo"] = "Factura"
+        nro_match = re.search(r'Compr\. Nro:\s*([\d\-]+)', texto_completo)
+        total_match = re.search(r'Importe Total:\s*USD\s*([\d\,\.]+)', texto_completo)
+        tc_match = re.search(r'Tipo de Cambio:\s*([\d\,\.]+)', texto_completo)
+        
+        if nro_match: datos["nro_factura"] = nro_match.group(1)
+        if total_match: datos["total_usd"] = float(total_match.group(1).replace('.', '').replace(',', '.'))
+        if tc_match: datos["tc_factura"] = float(tc_match.group(1).replace('.', '').replace(',', '.'))
+
+    # Detección y extracción de SWIFT
+    elif "ID SWIFT" in texto_completo.upper():
+        datos["tipo"] = "Swift"
+        ref_match = re.search(r'REFERENCIA:\s*(\w+)', texto_completo)
+        instruido_match = re.search(r'Importe instruido\s*:\s*([\d\,\.]+)', texto_completo)
+        operacion_match = re.search(r'Monto operación\s*:\s*([\d\,\.]+)', texto_completo)
+        
+        if ref_match: datos["referencia"] = ref_match.group(1)
+        if instruido_match: datos["usd_instruido"] = float(instruido_match.group(1).replace(',', '.'))
+        if operacion_match: datos["usd_operacion"] = float(operacion_match.group(1).replace(',', '.'))
+
+    # Detección y extracción de Liquidación Bancaria (Aviso de Crédito)
+    elif "AVISO DE CREDITO" in texto_completo.upper():
+        datos["tipo"] = "Liquidacion"
+        orden_match = re.search(r'ORDEN DE PAGO:\s*(\w+)', texto_completo)
+        # Busca el bloque de liquidación específico para extraer monto y TC
+        liq_match = re.search(r'B01-COBROS DE EXPORTACIONES DE BIENES.*?USD\s*([\d\.]+)\s*([\d\.]+)', texto_completo, re.DOTALL)
+        
+        if orden_match: datos["orden_pago"] = orden_match.group(1)
+        if liq_match:
+            datos["usd_liquidado"] = float(liq_match.group(1))
+            datos["tc_banco"] = float(liq_match.group(2))
             
-    # Buscar monto instruido, monto operacion y gastos
-    instruido_match = re.search(r'Importe instruido\s*:\s*([\d.,]+)', text)
-    operacion_match = re.search(r'Monto operación\s*:\s*([\d.,]+)', text)
-    
-    # Sumar todos los gastos a cargo del portador
-    gastos = re.findall(r'Gastos de transacción a cargo del portador.*:\s*([\d.,]+)', text)
-    total_gastos = sum([float(g.replace('.', '').replace(',', '.')) for g in gastos])
-    
-    importe_instruido = float(instruido_match.group(1).replace('.', '').replace(',', '.')) if instruido_match else 0.0
-    monto_recibido = float(operacion_match.group(1).replace('.', '').replace(',', '.')) if operacion_match else 0.0
-    
-    return importe_instruido, monto_recibido, total_gastos
+    return datos
 
-def extract_liquidacion_data(pdf_file):
-    text = ""
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text()
-            
-    # Buscar TC de liquidación y comisiones locales
-    tc_liq_match = re.search(r'SUBTOTAL POR TRANSF\s+USD\s+[\d.,]+\s+([\d.,]+)', text)
-    
-    comision = re.search(r'COMISION\s+USD\s+([\d.,]+)', text)
-    rg = re.search(r'RG2408\s+USD\s+([\d.,]+)', text)
-    iva = re.search(r'IVA 21%.*\s+USD\s+([\d.,]+)', text)
-    
-    tc_liq = float(tc_liq_match.group(1).replace('.', '').replace(',', '.')) if tc_liq_match else 0.0
-    
-    total_comisiones_locales = 0.0
-    for val in [comision, rg, iva]:
-        if val:
-            total_comisiones_locales += float(val.group(1).replace('.', '').replace(',', '.'))
-            
-    return tc_liq, total_comisiones_locales
+# --- INTERFAZ DE USUARIO ---
 
-# --- Interfaz de Usuario ---
-st.title("📊 Conciliador de Cobros de Exportación")
-st.markdown("Sube los tres documentos correspondientes al despacho para generar el reporte de conciliación cambiaria y financiera.")
+# 1. Panel Izquierdo (Sidebar)
+with st.sidebar:
+    st.image("https://img.icons8.com/color/96/000000/export.png", width=60) # Placeholder logo
+    st.title("Gestión de Exportaciones")
+    
+    # Crear nueva orden
+    st.markdown("### Nueva Orden")
+    nueva_orden = st.text_input("Nro de Exportación / Factura")
+    if st.button("Crear Carpeta", use_container_width=True):
+        if nueva_orden and nueva_orden not in st.session_state['exportaciones']:
+            st.session_state['exportaciones'][nueva_orden] = {
+                "factura": {},
+                "swifts": [],
+                "liquidaciones": []
+            }
+            st.session_state['orden_actual'] = nueva_orden
+            st.success("Carpeta creada.")
+            st.rerun()
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    file_factura = st.file_uploader("1. Factura de Exportación (PDF)", type="pdf")
-with col2:
-    file_swift = st.file_uploader("2. Mensaje SWIFT (PDF)", type="pdf")
-with col3:
-    file_liq = st.file_uploader("3. Aviso de Crédito / Comisiones (PDF)", type="pdf")
-
-if file_factura and file_swift and file_liq:
     st.divider()
+    st.markdown("### Órdenes Activas")
     
-    # Extracción
-    factura_usd, tc_factura = extract_factura_data(file_factura)
-    swift_instruido, swift_recibido, swift_gastos = extract_swift_data(file_swift)
-    tc_liq, comisiones_locales = extract_liquidacion_data(file_liq)
+    # Listar órdenes y su estado
+    for orden, data in st.session_state['exportaciones'].items():
+        # Calcular progreso
+        total_factura = data['factura'].get('total_usd', 0)
+        total_cobrado = sum(s.get('usd_instruido', 0) for s in data['swifts'])
+        
+        estado = "🔴 Sin datos"
+        if total_factura > 0:
+            if abs(total_factura - total_cobrado) < 1.0: # Margen de tolerancia de 1 USD
+                estado = "🟢 100% Cerrada"
+            elif total_cobrado > 0:
+                estado = f"🟡 Parcial ({(total_cobrado/total_factura)*100:.0f}%)"
+            else:
+                estado = "🔴 Pendiente cobro"
+                
+        if st.button(f"{orden}\n{estado}", key=orden, use_container_width=True):
+            st.session_state['orden_actual'] = orden
+            st.rerun()
+
+# 2. Panel Central
+if st.session_state['orden_actual']:
+    orden_id = st.session_state['orden_actual']
+    exp_data = st.session_state['exportaciones'][orden_id]
     
-    # Cálculos Financieros
-    diferencia_cobro = factura_usd - swift_instruido
-    brecha_tc = tc_liq - tc_factura
-    resultado_financiero_ars = swift_recibido * brecha_tc
+    st.header(f"Exportación: {orden_id}")
     
-    st.subheader("📋 Resumen de la Operación")
+    # Subida de archivos
+    st.markdown("#### Cargar Comprobantes (Factura, Swift, Liquidaciones)")
+    archivos_subidos = st.file_uploader("Arrastra los PDFs aquí", type="pdf", accept_multiple_files=True)
     
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Importe Factura", f"USD {factura_usd:,.2f}")
-    m2.metric("Pago Instruido (SWIFT)", f"USD {swift_instruido:,.2f}", f"Dif: USD {-diferencia_cobro:,.2f}" if diferencia_cobro != 0 else "Cobrado 100%")
-    m3.metric("Gastos SWIFT (Corresponsales)", f"USD {swift_gastos:,.2f}")
-    m4.metric("Neto Liquidado", f"USD {swift_recibido:,.2f}")
-    
+    if st.button("Procesar Archivos", type="primary"):
+        for archivo in archivos_subidos:
+            datos_extraidos = procesar_pdf(archivo)
+            
+            if datos_extraidos["tipo"] == "Factura":
+                exp_data["factura"] = datos_extraidos
+            elif datos_extraidos["tipo"] == "Swift":
+                # Evitar duplicados por referencia
+                if not any(s.get('referencia') == datos_extraidos.get('referencia') for s in exp_data["swifts"]):
+                    exp_data["swifts"].append(datos_extraidos)
+            elif datos_extraidos["tipo"] == "Liquidacion":
+                if not any(l.get('orden_pago') == datos_extraidos.get('orden_pago') for l in exp_data["liquidaciones"]):
+                    exp_data["liquidaciones"].append(datos_extraidos)
+        
+        st.success("Archivos procesados e incorporados a la orden.")
+        st.rerun()
+
     st.divider()
-    st.subheader("💱 Análisis de Tipo de Cambio y Resultado")
+
+    # Dashboard de Conciliación
+    col1, col2, col3 = st.columns(3)
     
-    c1, c2, c3 = st.columns(3)
-    c1.metric("TC Factura (Cierre)", f"$ {tc_factura:,.2f}")
-    c2.metric("TC Liquidación", f"$ {tc_liq:,.2f}", f"$ {brecha_tc:,.2f}")
+    total_factura = exp_data['factura'].get('total_usd', 0.0)
+    tc_factura = exp_data['factura'].get('tc_factura', 0.0)
+    total_instruido = sum(s.get('usd_instruido', 0.0) for s in exp_data["swifts"])
+    saldo_pendiente = total_factura - total_instruido
+
+    col1.metric("Total Facturado (USD)", f"${total_factura:,.2f}", f"TC BNA: {tc_factura}")
+    col2.metric("Total Instruido Recibido (USD)", f"${total_instruido:,.2f}")
+    col3.metric("Saldo Pendiente (USD)", f"${saldo_pendiente:,.2f}", 
+                delta="Cerrada" if saldo_pendiente == 0 else "Pendiente", 
+                delta_color="normal" if saldo_pendiente == 0 else "inverse")
+
+    # Detalle Financiero y Diferencia de Cambio
+    st.markdown("### Resultado Financiero por Liquidaciones")
     
-    color_resultado = "normal" if resultado_financiero_ars > 0 else "inverse"
-    c3.metric("Resultado por Diferencia de Cambio", f"ARS {resultado_financiero_ars:,.2f}", delta=f"ARS {resultado_financiero_ars:,.2f}", delta_color=color_resultado)
-    
-    st.markdown("### 🏦 Detalle de Comisiones Bancarias Locales")
-    st.info(f"El banco local retuvo un total de **USD {comisiones_locales:,.2f}** en concepto de comisiones, IVA y percepciones.")
+    if exp_data["liquidaciones"]:
+        resultados = []
+        for liq in exp_data["liquidaciones"]:
+            usd_liq = liq.get('usd_liquidado', 0)
+            tc_banco = liq.get('tc_banco', 0)
+            dif_tc = tc_banco - tc_factura
+            resultado_ars = usd_liq * dif_tc
+            
+            resultados.append({
+                "Orden de Pago": liq.get('orden_pago', 'N/A'),
+                "Monto Liquidado (USD)": usd_liq,
+                "TC Banco": tc_banco,
+                "TC Factura": tc_factura,
+                "Brecha TC": dif_tc,
+                "Resultado Financiero (ARS)": resultado_ars
+            })
+            
+        df_resultados = pd.DataFrame(resultados)
+        
+        # st.dataframe permite visualización limpia
+        st.dataframe(df_resultados.style.format({
+            "Monto Liquidado (USD)": "${:,.2f}",
+            "TC Banco": "{:,.2f}",
+            "TC Factura": "{:,.2f}",
+            "Brecha TC": "{:,.2f}",
+            "Resultado Financiero (ARS)": "${:,.2f}"
+        }), use_container_width=True)
+        
+        resultado_total = df_resultados["Resultado Financiero (ARS)"].sum()
+        if resultado_total > 0:
+            st.success(f"**Ganancia Total por Diferencia de Cambio:** ${resultado_total:,.2f} ARS")
+        else:
+            st.error(f"**Pérdida Total por Diferencia de Cambio:** ${resultado_total:,.2f} ARS")
+    else:
+        st.info("No se han cargado liquidaciones bancarias para calcular el resultado financiero.")
+
+else:
+    st.info("Crea o selecciona una orden en el panel izquierdo para comenzar.")
