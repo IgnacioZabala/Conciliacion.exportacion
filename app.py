@@ -12,6 +12,7 @@ if 'orden_actual' not in st.session_state:
 
 # --- FUNCIONES DE EXTRACCIÓN ---
 def extraer_monto_usd(texto, concepto, tc_banco):
+    """Busca conceptos de impuestos/comisiones y extrae el monto en USD."""
     idx = texto.upper().find(concepto.upper())
     if idx != -1:
         bloque = texto[idx:idx+150]
@@ -31,14 +32,27 @@ def procesar_pdf(archivo):
     texto_limpio = texto_completo.replace(',', '.')
     datos = {"tipo": "Desconocido"}
     
+    # 1. Factura
     if "FACTURA DE EXPORTACIÓN" in texto_completo.upper():
         datos["tipo"] = "Factura"
+        
+        nro_match = re.search(r'Compr\. Nro:\s*([\d\-]+)', texto_completo)
+        fecha_match = re.search(r'Fecha de Emisión:\s*([\d\/]+)', texto_completo)
+        cliente_match = re.search(r'Señor\(es\):\s*(.+)', texto_completo)
         tc_match = re.search(r'Tipo de Cambio:\s*([\d\.]+)', texto_limpio)
+        total_match = re.search(r'Importe Total:\s*USD\s*([\d\.]+)', texto_limpio)
+        
+        if nro_match: datos["nro_factura"] = nro_match.group(1).strip()
+        if fecha_match: datos["fecha"] = fecha_match.group(1).strip()
+        if cliente_match: datos["cliente"] = cliente_match.group(1).strip()
         if tc_match: datos["tc_factura"] = float(tc_match.group(1))
+        if total_match: datos["total_usd"] = float(total_match.group(1))
 
+    # 2. Swift
     elif "ID SWIFT" in texto_completo.upper():
         datos["tipo"] = "Swift"
         operacion_match = re.search(r'Monto operación\s*:\s*([\d\.]+)', texto_limpio)
+        gastos_match = re.search(r'Gastos de transacción.*?:\s*([\d\.]+)', texto_limpio)
         
         if "ANTICIPO" in texto_completo.upper():
             datos["etiqueta"] = "Anticipo"
@@ -46,7 +60,9 @@ def procesar_pdf(archivo):
             datos["etiqueta"] = "Restante"
             
         if operacion_match: datos["usd_swift"] = float(operacion_match.group(1))
+        if gastos_match: datos["gastos_swift"] = float(gastos_match.group(1))
 
+    # 3. Liquidación Bancaria
     elif "AVISO DE CREDITO" in texto_completo.upper():
         datos["tipo"] = "Liquidacion"
         liq_match = re.search(r'B01-COBROS DE EXPORTACIONES DE BIENES.*?USD\s*([\d\.]+)\s*([\d\.]+)', texto_limpio, re.DOTALL)
@@ -72,7 +88,7 @@ with st.sidebar:
     if st.button("Crear Exportación", use_container_width=True):
         if nueva_orden and nueva_orden not in st.session_state['exportaciones']:
             st.session_state['exportaciones'][nueva_orden] = {
-                "tc_factura": 0.0,
+                "factura": {},
                 "swifts": [],
                 "liquidaciones": []
             }
@@ -93,7 +109,7 @@ if st.session_state['orden_actual']:
     exp_data = st.session_state['exportaciones'][orden_id]
     
     st.title(f"Exportación: {orden_id}")
-    st.markdown("Carga los PDFs correspondientes a esta exportación.")
+    st.markdown("Carga los PDFs (Factura, Swifts y Avisos de Crédito) correspondientes.")
     
     archivos = st.file_uploader("Subir archivos PDF", type="pdf", accept_multiple_files=True, key=f"uploader_{orden_id}")
     
@@ -101,7 +117,7 @@ if st.session_state['orden_actual']:
         for archivo in archivos:
             datos = procesar_pdf(archivo)
             if datos["tipo"] == "Factura":
-                exp_data["tc_factura"] = datos.get("tc_factura", 0.0)
+                exp_data["factura"] = datos
             elif datos["tipo"] == "Swift":
                 if "swifts" not in exp_data:
                     exp_data["swifts"] = []
@@ -115,55 +131,16 @@ if st.session_state['orden_actual']:
 
     st.divider()
 
-    # Variables con .get() para evitar KeyErrors con datos viejos[cite: 10]
-    tc_factura = exp_data.get("tc_factura", 0.0)
+    # Variables seguras utilizando .get()
+    datos_factura = exp_data.get("factura", {})
+    tc_factura = datos_factura.get("tc_factura", 0.0)
     swifts_guardados = exp_data.get("swifts", [])
     liquidaciones_guardadas = exp_data.get("liquidaciones", [])
 
-    # Visualización de datos procesados
-    if tc_factura > 0 and swifts_guardados:
-        # Ordenar para mostrar "Anticipo" primero
-        swifts_ordenados = sorted(swifts_guardados, key=lambda x: 0 if x.get("etiqueta") == "Anticipo" else 1)
-        
-        for swift in swifts_ordenados:
-            etiqueta = swift.get("etiqueta", "Cobro")
-            usd_swift = swift.get("usd_swift", 0.0)
-            
-            # Buscar liquidación asociada
-            liq = next((l for l in liquidaciones_guardadas if abs(l.get("usd_liquidado", 0) - usd_swift) < 1.0), None)
-            
-            st.subheader(f"{etiqueta}:")
-            st.markdown(f"**Swift** ${usd_swift:,.2f}")
-            
-            if liq:
-                tc_banco = liq.get("tc_banco", 0.0)
-                
-                # Conversión de gastos a pesos
-                comision_ars = liq.get("usd_comision", 0.0) * tc_banco
-                rg2408_ars = liq.get("usd_rg2408", 0.0) * tc_banco
-                iva_ars = liq.get("usd_iva", 0.0) * tc_banco
-                
-                # Resultado financiero
-                brecha = tc_banco - tc_factura
-                resultado_ars = usd_swift * brecha
-                
-                if resultado_ars > 0:
-                    texto_resultado = f"positivo (${resultado_ars:,.2f} ARS)"
-                elif resultado_ars < 0:
-                    texto_resultado = f"negativo (${resultado_ars:,.2f} ARS)"
-                else:
-                    texto_resultado = "neutro ($0.00 ARS)"
-
-                st.markdown(f"**Comision** ${comision_ars:,.2f}")
-                st.markdown(f"**rg2408** ${rg2408_ars:,.2f}")
-                st.markdown(f"**IVA** ${iva_ars:,.2f}")
-                st.markdown(f"**Resultado financiero** ({texto_resultado})")
-            else:
-                st.warning("*(Falta cargar el Aviso de Crédito correspondiente)*")
-            
-            st.write("")
-            
-    elif not tc_factura:
-        st.info("💡 Asegúrate de cargar la Factura de Exportación.")
-else:
-    st.info("👈 Crea o selecciona una exportación en el panel lateral.")
+    # Visualización de datos de la Factura
+    if datos_factura:
+        st.subheader("🧾 Datos de la Factura")
+        col1, col2, col3 = st.columns(3)
+        col1.markdown(f"**Fecha:** {datos_factura.get('fecha', 'N/A')}")
+        col1.markdown(f"**Número:** {datos_factura.get('nro_factura', 'N/A')}")
+        col2.markdown(f"**Cliente
