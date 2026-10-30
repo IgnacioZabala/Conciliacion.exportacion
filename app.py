@@ -12,14 +12,17 @@ if 'orden_actual' not in st.session_state:
 
 # --- FUNCIONES DE EXTRACCIÓN ---
 def extraer_monto_usd(texto, concepto, tc_banco):
-    """Busca conceptos de impuestos/comisiones y extrae el monto en USD."""
+    """Busca conceptos de impuestos/comisiones y extrae el monto exacto en USD."""
     idx = texto.upper().find(concepto.upper())
     if idx != -1:
-        bloque = texto[idx:idx+150]
-        numeros = re.findall(r'\b\d+\.\d+\b', bloque)
+        # Ampliamos el bloque de búsqueda a 400 caracteres
+        bloque = texto[idx:idx+400]
+        # Buscar estrictamente números con 1 o 2 decimales (para evitar atrapar el 21 del IVA o montos enteros)
+        numeros = re.findall(r'\b\d+\.\d{1,2}\b', bloque)
         for num_str in numeros:
             num = float(num_str)
-            if 0 < num < 1000 and num != tc_banco:
+            # Los montos de comisión/impuestos son menores a 1000 y no deben ser igual al Tipo de Cambio
+            if 0 < num < 1000 and num != tc_banco and num != 21.0:
                 return num
     return 0.0
 
@@ -52,7 +55,7 @@ def procesar_pdf(archivo):
     elif "ID SWIFT" in texto_completo.upper():
         datos["tipo"] = "Swift"
         operacion_match = re.search(r'Monto operación\s*:\s*([\d\.]+)', texto_limpio)
-        gastos_match = re.search(r'Gastos de transacción.*?:\s*([\d\.]+)', texto_limpio)
+        gastos_match = re.search(r'Gastos de transacci.n.*?:\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
         
         if "ANTICIPO" in texto_completo.upper():
             datos["etiqueta"] = "Anticipo"
@@ -108,7 +111,15 @@ if st.session_state['orden_actual']:
     orden_id = st.session_state['orden_actual']
     exp_data = st.session_state['exportaciones'][orden_id]
     
-    st.title(f"Exportación: {orden_id}")
+    col_title, col_btn = st.columns([0.8, 0.2])
+    with col_title:
+        st.title(f"Exportación: {orden_id}")
+    with col_btn:
+        # Botón para borrar los datos cacheados que causan duplicados
+        if st.button("🗑️ Limpiar Datos", use_container_width=True):
+            st.session_state['exportaciones'][orden_id] = {"factura": {}, "swifts": [], "liquidaciones": []}
+            st.rerun()
+            
     st.markdown("Carga los PDFs (Factura, Swifts y Avisos de Crédito) correspondientes.")
     
     archivos = st.file_uploader("Subir archivos PDF", type="pdf", accept_multiple_files=True, key=f"uploader_{orden_id}")
@@ -118,33 +129,38 @@ if st.session_state['orden_actual']:
             datos = procesar_pdf(archivo)
             if datos["tipo"] == "Factura":
                 exp_data["factura"] = datos
+                
             elif datos["tipo"] == "Swift":
                 if "swifts" not in exp_data:
                     exp_data["swifts"] = []
+                # LÓGICA ANTI-DUPLICADOS: Filtramos el viejo y dejamos el nuevo
+                exp_data["swifts"] = [s for s in exp_data["swifts"] if s.get("usd_swift") != datos.get("usd_swift")]
                 exp_data["swifts"].append(datos)
+                
             elif datos["tipo"] == "Liquidacion":
                 if "liquidaciones" not in exp_data:
                     exp_data["liquidaciones"] = []
+                # LÓGICA ANTI-DUPLICADOS: Filtramos el viejo y dejamos el nuevo
+                exp_data["liquidaciones"] = [l for l in exp_data["liquidaciones"] if l.get("usd_liquidado") != datos.get("usd_liquidado")]
                 exp_data["liquidaciones"].append(datos)
-        st.success("Archivos procesados y guardados en memoria.")
+                
+        st.success("Archivos procesados. Se reemplazaron registros duplicados automáticamente.")
         st.rerun()
 
     st.divider()
 
-    # Variables seguras utilizando .get()
     datos_factura = exp_data.get("factura", {})
     tc_factura = datos_factura.get("tc_factura", 0.0)
     swifts_guardados = exp_data.get("swifts", [])
     liquidaciones_guardadas = exp_data.get("liquidaciones", [])
 
-    # Visualización de datos de la Factura
+    # Datos de la Factura
     if datos_factura:
         st.subheader("🧾 Datos de la Factura")
         col1, col2, col3 = st.columns(3)
         col1.markdown(f"**Fecha:** {datos_factura.get('fecha', 'N/A')}")
         col1.markdown(f"**Número:** {datos_factura.get('nro_factura', 'N/A')}")
         
-        # Corrección aplicada aquí para evitar saltos de línea
         cliente = datos_factura.get('cliente', 'N/A')
         col2.markdown(f"**Cliente:** {cliente}")
         
@@ -152,7 +168,7 @@ if st.session_state['orden_actual']:
         col3.markdown(f"**Tipo de Cambio:** {tc_factura:,.2f}")
         st.divider()
 
-    # Visualización de datos de Cobros procesados
+    # Datos de los Cobros
     if tc_factura > 0 and swifts_guardados:
         swifts_ordenados = sorted(swifts_guardados, key=lambda x: 0 if x.get("etiqueta") == "Anticipo" else 1)
         
@@ -170,7 +186,7 @@ if st.session_state['orden_actual']:
             if liq:
                 tc_banco = liq.get("tc_banco", 0.0)
                 
-                # Conversión de gastos a pesos (USD * TC Banco)
+                # Conversión a pesos (Multiplicando USD extraído x TC del Banco)
                 comision_ars = liq.get("usd_comision", 0.0) * tc_banco
                 rg2408_ars = liq.get("usd_rg2408", 0.0) * tc_banco
                 iva_ars = liq.get("usd_iva", 0.0) * tc_banco
