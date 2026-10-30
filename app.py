@@ -143,4 +143,59 @@ if st.session_state['orden_actual']:
         col1, col2, col3 = st.columns(3)
         col1.markdown(f"**Fecha:** {datos_factura.get('fecha', 'N/A')}")
         col1.markdown(f"**Número:** {datos_factura.get('nro_factura', 'N/A')}")
-        col2.markdown(f"**Cliente
+        
+        # Corrección aplicada aquí para evitar saltos de línea
+        cliente = datos_factura.get('cliente', 'N/A')
+        col2.markdown(f"**Cliente:** {cliente}")
+        
+        col3.markdown(f"**Monto:** USD ${datos_factura.get('total_usd', 0.0):,.2f}")
+        col3.markdown(f"**Tipo de Cambio:** {tc_factura:,.2f}")
+        st.divider()
+
+    # Visualización de datos de Cobros procesados
+    if tc_factura > 0 and swifts_guardados:
+        swifts_ordenados = sorted(swifts_guardados, key=lambda x: 0 if x.get("etiqueta") == "Anticipo" else 1)
+        
+        for swift in swifts_ordenados:
+            etiqueta = swift.get("etiqueta", "Cobro")
+            usd_swift = swift.get("usd_swift", 0.0)
+            gastos_swift = swift.get("gastos_swift", 0.0)
+            
+            liq = next((l for l in liquidaciones_guardadas if abs(l.get("usd_liquidado", 0) - usd_swift) < 1.0), None)
+            
+            st.subheader(f"📌 {etiqueta}:")
+            st.markdown(f"**Swift (Operación):** USD ${usd_swift:,.2f}")
+            st.markdown(f"**Gastos de Transacción (Swift):** USD ${gastos_swift:,.2f}")
+            
+            if liq:
+                tc_banco = liq.get("tc_banco", 0.0)
+                
+                # Conversión de gastos a pesos (USD * TC Banco)
+                comision_ars = liq.get("usd_comision", 0.0) * tc_banco
+                rg2408_ars = liq.get("usd_rg2408", 0.0) * tc_banco
+                iva_ars = liq.get("usd_iva", 0.0) * tc_banco
+                
+                # Resultado financiero
+                brecha = tc_banco - tc_factura
+                resultado_ars = usd_swift * brecha
+                
+                if resultado_ars > 0:
+                    texto_resultado = f"positivo (${resultado_ars:,.2f} ARS)"
+                elif resultado_ars < 0:
+                    texto_resultado = f"negativo (${resultado_ars:,.2f} ARS)"
+                else:
+                    texto_resultado = "neutro ($0.00 ARS)"
+
+                st.markdown(f"**Comisión:** ${comision_ars:,.2f} ARS")
+                st.markdown(f"**RG2408:** ${rg2408_ars:,.2f} ARS")
+                st.markdown(f"**IVA 21%:** ${iva_ars:,.2f} ARS")
+                st.markdown(f"**Resultado financiero:** {texto_resultado}")
+            else:
+                st.warning("*(Falta cargar el Aviso de Crédito correspondiente a este cobro)*")
+            
+            st.write("")
+            
+    elif not datos_factura:
+        st.info("💡 Asegúrate de cargar la Factura de Exportación para visualizar los cálculos.")
+else:
+    st.info("👈 Crea o selecciona una exportación en el panel lateral.")
