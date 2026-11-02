@@ -3,13 +3,14 @@ import pandas as pd
 import numpy as np
 from pypdf import PdfReader
 import io
+import json
 import re
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-st.set_page_config(page_title="Conciliador de cobros de exportación", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Conciliador de cobros de exportación", layout="wide", initial_sidebar_state="expanded")
 
-# Custom CSS matching the exact styling of the original HTML app
+# Custom CSS matching the exact styling
 st.markdown('''
 <style>
 :root {
@@ -39,84 +40,159 @@ h2 { font-size: 15px !important; margin-bottom: 10px !important; color: #1c2330;
 .kpi-container.r { background-color: #fdeaea; }
 .kpi-label { font-size: 11px; color: #6b7585; display: block; }
 .kpi-value { font: 600 16px ui-monospace, Menlo, monospace; margin-top: 4px; display: block; word-break: break-word; }
-.zone {
-    border: 2px dashed #dde1e8;
-    border-radius: 10px;
-    padding: 12px;
-    text-align: center;
-    color: #6b7585;
-    font-size: 12px;
-    background: #fafbfc;
-}
-.zone b { display: block; color: #1c2330; font-size: 13px; }
 </style>
 ''', unsafe_allow_html=True)
 
-# Initialize session state for data
-if 'op' not in st.session_state:
-    st.session_state.op = '7 - PI070826'
-if 'base' not in st.session_state:
-    st.session_state.base = 'neto'
-if 'fac' not in st.session_state:
-    st.session_state.fac = {
-        'cliente': 'AMERICA FOODS FLORIDA LLC',
-        'nro': '00080-00000015',
-        'fecha': '2026-09-17',
-        'usd': 114911.05,
-        'tc': 1513.5
-    }
-if 'parts' not in st.session_state:
-    st.session_state.parts = {
-        'ant': {
-            'n': 'Anticipo',
-            'swift': 52707.6,
-            'gasto': 45.0,
-            'tc': 1511.0,
-            'com': 139253.76,
-            'rg': 4170.36,
-            'iva': 29237.85,
-            'acr': 79400526.63,
-            'fecha': ''
-        },
-        'res': {
-            'n': 'Restante',
-            'swift': 62203.45,
-            'gasto': 45.0,
-            'tc': 1537.5,
-            'com': 167249.25,
-            'rg': 5012.25,
-            'iva': 35116.5,
-            'acr': 95361238.88,
-            'fecha': ''
+# Initialize Session State for multiple exports stored in memory/dict
+if 'exports' not in st.session_state:
+    st.session_state.exports = {
+        '7 - PI070826': {
+            'op': '7 - PI070826',
+            'base': 'neto',
+            'fac': {
+                'cliente': 'AMERICA FOODS FLORIDA LLC',
+                'nro': '00080-00000015',
+                'fecha': '2026-09-17',
+                'usd': 114911.05,
+                'tc': 1513.5
+            },
+            'parts': {
+                'ant': {
+                    'n': 'Anticipo',
+                    'swift': 52707.6,
+                    'gasto': 45.0,
+                    'tc': 1511.0,
+                    'com': 139253.76,
+                    'rg': 4170.36,
+                    'iva': 29237.85,
+                    'acr': 79400526.63,
+                    'fecha': ''
+                },
+                'res': {
+                    'n': 'Restante',
+                    'swift': 62203.45,
+                    'gasto': 45.0,
+                    'tc': 1537.5,
+                    'com': 167249.25,
+                    'rg': 5012.25,
+                    'iva': 35116.5,
+                    'acr': 95361238.88,
+                    'fecha': ''
+                }
+            }
         }
     }
 
-f = st.session_state.fac
-st.markdown("<h1>Conciliación de exportación</h1>", unsafe_allow_html=True)
-st.markdown(f"<div class='sub'>{st.session_state.op} · {f['cliente']} · Factura {f['nro']}</div>", unsafe_allow_html=True)
+if 'current_op' not in st.session_state:
+    st.session_state.current_op = '7 - PI070826'
+
+# --- SIDEBAR (Panel lateral fijo) ---
+with st.sidebar:
+    st.markdown("### 📦 Mis Conciliaciones")
+    
+    # Button to create a new reconciliation
+    if st.button("➕ Generar nueva conciliación", use_container_width=True):
+        new_id = f"Op - {len(st.session_state.exports) + 1}"
+        st.session_state.exports[new_id] = {
+            'op': new_id,
+            'base': 'neto',
+            'fac': {
+                'cliente': 'NUEVO CLIENTE',
+                'nro': '00001-00000001',
+                'fecha': '2026-11-02',
+                'usd': 10000.0,
+                'tc': 1000.0
+            },
+            'parts': {
+                'ant': {
+                    'n': 'Anticipo / Parte 1',
+                    'swift': 10000.0,
+                    'gasto': 0.0,
+                    'tc': 1000.0,
+                    'com': 0.0,
+                    'rg': 0.0,
+                    'iva': 0.0,
+                    'acr': 1000000.0,
+                    'fecha': ''
+                }
+            }
+        }
+        st.session_state.current_op = new_id
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("**Historial y % de cobro:**")
+
+    # List all exports and their % cobro
+    for op_key, data in list(st.session_state.exports.items()):
+        f_usd = data['fac']['usd']
+        tot_sw = sum(p['swift'] for p in data['parts'].values())
+        pct = (tot_sw / f_usd * 100) if f_usd > 0 else 0
+        
+        # Selection button for each export in sidebar
+        btn_label = f"{op_key} ({pct:.1f}%)"
+        if st.button(btn_label, use_container_width=True, key=f"sb_{op_key}"):
+            st.session_state.current_op = op_key
+            st.rerun()
+
+    st.markdown("---")
+    
+    # Button to clean data for current active export
+    if st.button("🧹 Limpiar datos de esta exportación", use_container_width=True, type="secondary"):
+        curr = st.session_state.current_op
+        if curr in st.session_state.exports:
+            st.session_state.exports[curr]['fac']['cliente'] = ''
+            st.session_state.exports[curr]['fac']['nro'] = ''
+            st.session_state.exports[curr]['fac']['usd'] = 0.0
+            st.session_state.exports[curr]['fac']['tc'] = 0.0
+            for pk in st.session_state.exports[curr]['parts']:
+                st.session_state.exports[curr]['parts'][pk]['swift'] = 0.0
+                st.session_state.exports[curr]['parts'][pk]['gasto'] = 0.0
+                st.session_state.exports[curr]['parts'][pk]['tc'] = 0.0
+                st.session_state.exports[curr]['parts'][pk]['com'] = 0.0
+                st.session_state.exports[curr]['parts'][pk]['rg'] = 0.0
+                st.session_state.exports[curr]['parts'][pk]['iva'] = 0.0
+                st.session_state.exports[curr]['parts'][pk]['acr'] = 0.0
+            st.success(f"Datos de {curr} limpiados.")
+            st.rerun()
+
+# Get current working export data
+curr_data = st.session_state.exports[st.session_state.current_op]
+S_op = curr_data['op']
+f = curr_data['fac']
+parts = curr_data['parts']
+
+# Allow renaming the operation code
+new_op_name = st.text_input("Código de Operación / Referencia", value=S_op)
+if new_op_name != S_op:
+    st.session_state.exports[new_op_name] = st.session_state.exports.pop(st.session_state.current_op)
+    st.session_state.current_op = new_op_name
+    st.rerun()
+
+st.markdown(f"<div class='sub'>{st.session_state.current_op} · {f['cliente']} · Factura {f['nro']}</div>", unsafe_allow_html=True)
 
 # Factura E Section
 st.markdown("<div class='card'>", unsafe_allow_html=True)
 st.markdown("<h2>Factura E</h2>", unsafe_allow_html=True)
 c1, c2, c3, c4, c5 = st.columns(5)
 with c1:
-    f['cliente'] = st.text_input("Cliente", value=f['cliente'])
+    f['cliente'] = st.text_input("Cliente", value=f['cliente'], key=f"cli_{st.session_state.current_op}")
 with c2:
-    f['nro'] = st.text_input("N° Factura E", value=f['nro'])
+    f['nro'] = st.text_input("N° Factura E", value=f['nro'], key=f"nro_{st.session_state.current_op}")
 with c3:
     try:
         d_val = pd.to_datetime(f['fecha']).date()
     except:
         d_val = pd.to_datetime('2026-09-17').date()
-    res_date = st.date_input("Fecha", value=d_val)
+    res_date = st.date_input("Fecha", value=d_val, key=f"date_{st.session_state.current_op}")
     f['fecha'] = str(res_date)
 with c4:
-    f['usd'] = st.number_input("Importe total (USD)", value=float(f['usd']), step=0.01, format="%.2f")
+    f['usd'] = st.number_input("Importe total (USD)", value=float(f['usd']), step=0.01, format="%.2f", key=f"usd_{st.session_state.current_op}")
 with c5:
-    f['tc'] = st.number_input("T.C. factura", value=float(f['tc']), step=0.01, format="%.2f")
+    f['tc'] = st.number_input("T.C. factura", value=float(f['tc']), step=0.01, format="%.2f", key=f"tc_{st.session_state.current_op}")
 st.markdown("</div>", unsafe_allow_html=True)
 
-# Helper function to extract text from PDF file uploaded in Streamlit
+# Helper function to extract text from PDF
 def extract_pdf_text(uploaded_file):
     try:
         reader = PdfReader(uploaded_file)
@@ -127,66 +203,47 @@ def extract_pdf_text(uploaded_file):
     except Exception as e:
         return ""
 
-def parse_num(s):
-    try:
-        # handle Argentine format numbers if needed
-        s_clean = s.replace('.', '').replace(',', '.')
-        return float(s_clean)
-    except:
-        return 0.0
-
-# Process PDF uploads and auto-extract fields
-for pk, p in st.session_state.parts.items():
+# Process PDF uploads and auto-extract fields for each part
+for pk, p in parts.items():
     st.markdown(f"<div class='card'>", unsafe_allow_html=True)
     st.markdown(f"<h2>{p['n']}</h2>", unsafe_allow_html=True)
     
     col_u1, col_u2, col_u3 = st.columns(3)
     
     with col_u1:
-        up_fac = st.file_uploader(f"Factura ({p['n']})", type=['pdf'], key=f"up_fac_{pk}")
+        up_fac = st.file_uploader(f"Factura ({p['n']})", type=['pdf'], key=f"up_fac_{st.session_state.current_op}_{pk}")
         if up_fac:
             txt = extract_pdf_text(up_fac)
-            # Try matching invoice patterns
             m_usd = re.search(r'([\d.]+,\d{6})\s+([\d.]+,\d{6})\s+([\d.]+,\d{2})', txt)
             m_tc = re.search(r'Tipo de Cambio:\s*([\d.,]+)', txt)
             m_nro = re.search(r'Compr\.\s*Nro:\s*([\d-]+)', txt)
             m_cli = re.search(r'Se\.or\(es\):\s*(.+?)\s+Domicilio', txt)
             if m_usd:
-                try:
-                    f['usd'] = float(m_usd.group(3).replace('.', '').replace(',', '.'))
-                except:
-                    pass
+                try: f['usd'] = float(m_usd.group(3).replace('.', '').replace(',', '.'))
+                except: pass
             if m_tc:
-                try:
-                    f['tc'] = float(m_tc.group(1).replace('.', '').replace(',', '.'))
-                except:
-                    pass
-            if m_nro:
-                f['nro'] = m_nro.group(1)
-            if m_cli:
-                f['cliente'] = m_cli.group(1)
-            st.success("Factura leída correctamente.")
+                try: f['tc'] = float(m_tc.group(1).replace('.', '').replace(',', '.'))
+                except: pass
+            if m_nro: f['nro'] = m_nro.group(1)
+            if m_cli: f['cliente'] = m_cli.group(1)
+            st.success("Factura leída.")
 
     with col_u2:
-        up_sw = st.file_uploader(f"Swift ({p['n']})", type=['pdf'], key=f"up_sw_{pk}")
+        up_sw = st.file_uploader(f"Swift ({p['n']})", type=['pdf'], key=f"up_sw_{st.session_state.current_op}_{pk}")
         if up_sw:
             txt = extract_pdf_text(up_sw)
             m_inst = re.search(r'Importe instruido\s*:\s*([\d.]+)', txt)
             m_gast = re.search(r'gastos\s*:\s*([\d.]+)', txt)
             if m_inst:
-                try:
-                    p['swift'] = float(m_inst.group(1))
-                except:
-                    pass
+                try: p['swift'] = float(m_inst.group(1))
+                except: pass
             if m_gast:
-                try:
-                    p['gasto'] = float(m_gast.group(1))
-                except:
-                    pass
-            st.success("Swift leído correctamente.")
+                try: p['gasto'] = float(m_gast.group(1))
+                except: pass
+            st.success("Swift leído.")
 
     with col_u3:
-        up_com = st.file_uploader(f"Comisiones ({p['n']})", type=['pdf'], key=f"up_com_{pk}")
+        up_com = st.file_uploader(f"Comisiones ({p['n']})", type=['pdf'], key=f"up_com_{st.session_state.current_op}_{pk}")
         if up_com:
             txt = extract_pdf_text(up_com)
             m_sub = re.search(r'SUBTOTAL POR TRANSF USD\s*([\d.]+)\s*([\d.]+)\s*([\d.]+)', txt)
@@ -195,69 +252,59 @@ for pk, p in st.session_state.parts.items():
             m_iva = re.search(r'Ley 27743 USD\s*([\d.]+)\s*([\d.]+)\s*([\d.]+)', txt)
             m_acr = re.search(r'acreditado\s*:\s*\S+\s*([\d.]+)', txt)
             if m_sub:
-                try:
-                    p['tc'] = float(m_sub.group(1))
-                except:
-                    pass
+                try: p['tc'] = float(m_sub.group(1))
+                except: pass
             if m_com:
-                try:
-                    p['com'] = float(m_com.group(2).replace('.', '').replace(',', '.'))
-                except:
-                    pass
+                try: p['com'] = float(m_com.group(2).replace('.', '').replace(',', '.'))
+                except: pass
             if m_rg:
-                try:
-                    p['rg'] = float(m_rg.group(2).replace('.', '').replace(',', '.'))
-                except:
-                    pass
+                try: p['rg'] = float(m_rg.group(2).replace('.', '').replace(',', '.'))
+                except: pass
             if m_iva:
-                try:
-                    p['iva'] = float(m_iva.group(2).replace('.', '').replace(',', '.'))
-                except:
-                    pass
+                try: p['iva'] = float(m_iva.group(2).replace('.', '').replace(',', '.'))
+                except: pass
             if m_acr:
-                try:
-                    p['acr'] = float(m_acr.group(1).replace('.', '').replace(',', '.'))
-                except:
-                    pass
-            st.success("Aviso de crédito leído correctamente.")
+                try: p['acr'] = float(m_acr.group(1).replace('.', '').replace(',', '.'))
+                except: pass
+            st.success("Aviso de crédito leído.")
 
-    # Input fields for each part
+    # Input fields
     c_f1, c_f2, c_f3, c_f4, c_f5 = st.columns(5)
     with c_f1:
-        p['swift'] = st.number_input(f"Swift instruido USD ({p['n']})", value=float(p['swift']), step=0.01, format="%.2f", key=f"sw_{pk}")
+        p['swift'] = st.number_input(f"Swift instruido USD", value=float(p['swift']), step=0.01, format="%.2f", key=f"sw_{st.session_state.current_op}_{pk}")
     with c_f2:
-        p['gasto'] = st.number_input(f"Gasto Swift USD ({p['n']})", value=float(p['gasto']), step=0.01, format="%.2f", key=f"gs_{pk}")
+        p['gasto'] = st.number_input(f"Gasto Swift USD", value=float(p['gasto']), step=0.01, format="%.2f", key=f"gs_{st.session_state.current_op}_{pk}")
     with c_f3:
-        p['tc'] = st.number_input(f"T.C. liq. ({p['n']})", value=float(p['tc']), step=0.01, format="%.2f", key=f"tc_{pk}")
+        p['tc'] = st.number_input(f"T.C. liq.", value=float(p['tc']), step=0.01, format="%.2f", key=f"tc_{st.session_state.current_op}_{pk}")
     with c_f4:
-        p['com'] = st.number_input(f"Comisión $ ({p['n']})", value=float(p['com']), step=0.01, format="%.2f", key=f"com_{pk}")
+        p['com'] = st.number_input(f"Comisión $", value=float(p['com']), step=0.01, format="%.2f", key=f"com_{st.session_state.current_op}_{pk}")
     with c_f5:
-        p['rg'] = st.number_input(f"RG 2408 $ ({p['n']})", value=float(p['rg']), step=0.01, format="%.2f", key=f"rg_{pk}")
+        p['rg'] = st.number_input(f"RG 2408 $", value=float(p['rg']), step=0.01, format="%.2f", key=f"rg_{st.session_state.current_op}_{pk}")
 
     c_f6, c_f7 = st.columns(2)
     with c_f6:
-        p['iva'] = st.number_input(f"IVA 21% $ ({p['n']})", value=float(p['iva']), step=0.01, format="%.2f", key=f"iva_{pk}")
+        p['iva'] = st.number_input(f"IVA 21% $", value=float(p['iva']), step=0.01, format="%.2f", key=f"iva_{st.session_state.current_op}_{pk}")
     with c_f7:
-        p['acr'] = st.number_input(f"Acreditado $ ({p['n']})", value=float(p['acr']), step=0.01, format="%.2f", key=f"acr_{pk}")
+        p['acr'] = st.number_input(f"Acreditado $", value=float(p['acr']), step=0.01, format="%.2f", key=f"acr_{pk}")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Calculation logic
-base_opt = st.selectbox("Base del resultado financiero:", ["Neto liquidado (como el PDF de ejemplo)", "Importe Swift instruido (como la app anterior)"], index=0 if st.session_state.base=='neto' else 1)
-st.session_state.base = 'neto' if 'Neto' in base_opt else 'swift'
+# Calculation logic & base selector
+base_opt = st.selectbox("Base del resultado financiero:", ["Neto liquidado (como el PDF de ejemplo)", "Importe Swift instruido (como la app anterior)"], index=0 if curr_data['base']=='neto' else 1)
+curr_data['base'] = 'neto' if 'Neto' in base_opt else 'swift'
 
 def compute_part(p):
     net = p['swift'] - p['gasto']
-    B = net if st.session_state.base == 'neto' else p['swift']
+    B = net if curr_data['base'] == 'neto' else p['swift']
     liq = net * p['tc']
     ct = p['com'] + p['rg'] + p['iva']
     sw = p['gasto'] * p['tc']
     fa = B * f['tc']
     rf = B * (p['tc'] - f['tc'])
-    d = fa + rf - p['acr'] - (sw if st.session_state.base == 'swift' else 0) - ct
+    d = fa + rf - p['acr'] - (sw if curr_data['base'] == 'swift' else 0) - ct
     return {'net': net, 'liq': liq, 'ct': ct, 'sw': sw, 'fa': fa, 'rf': rf, 'd': d}
 
-parts_list = list(st.session_state.parts.values())
+parts_list = list(parts.values())
 results = [{**p, **compute_part(p)} for p in parts_list]
 
 tot_swift = sum(r['swift'] for r in results)
@@ -292,7 +339,6 @@ st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("<div class='card'>", unsafe_allow_html=True)
 st.markdown("<h2>Resumen y conciliación</h2>", unsafe_allow_html=True)
 
-# Table display
 table_data = []
 for r in results:
     table_data.append({
@@ -308,7 +354,6 @@ for r in results:
         'Diferencia': "✓ ok" if abs(r['d']) < 1 else f"$ {r['d']:,.2f} ✗"
     })
 
-# Add total row
 table_data.append({
     'Parte': 'TOTAL',
     'Swift USD': f"{tot_swift:,.2f}",
@@ -323,16 +368,14 @@ table_data.append({
 })
 
 st.dataframe(pd.DataFrame(table_data), use_container_width=True)
-
 st.markdown("<div style='font-size:12px; color:#6b7585; margin-top:8px;'>Regla: Factura $ (a T.C. de factura) + Resultado financiero = Acreditado + Comisión, IVA y percepción (+ Gasto Swift $ si la base es el importe Swift instruido).</div>", unsafe_allow_html=True)
 
-# PDF Generation button
 def generate_pdf_bytes():
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     y = 800
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, y, f"Conciliación de Exportación: {st.session_state.op}")
+    c.drawString(50, y, f"Conciliación de Exportación: {S_op}")
     y -= 30
     c.setFont("Helvetica-Bold", 11)
     c.drawString(50, y, "Datos de la Factura")
@@ -361,5 +404,5 @@ def generate_pdf_bytes():
     buffer.seek(0)
     return buffer.getvalue()
 
-st.download_button("⬇ Exportar PDF para archivo", data=generate_pdf_bytes(), file_name=f"Conciliacion_{st.session_state.op.replace(' ', '')}.pdf", mime="application/pdf")
+st.download_button("⬇ Exportar PDF para archivo", data=generate_pdf_bytes(), file_name=f"Conciliacion_{S_op.replace(' ', '')}.pdf", mime="application/pdf")
 st.markdown("</div>", unsafe_allow_html=True)
