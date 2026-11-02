@@ -7,7 +7,6 @@ import re
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-# Importaciones opcionales para soporte OCR en PDFs escaneados
 try:
     import pytesseract
     from pdf2image import convert_from_bytes
@@ -17,7 +16,6 @@ except ImportError:
 
 st.set_page_config(page_title="Conciliador de cobros de exportación", layout="wide", initial_sidebar_state="expanded")
 
-# Custom CSS matching the exact styling
 st.markdown('''
 <style>
 :root {
@@ -50,7 +48,6 @@ h2 { font-size: 15px !important; margin-bottom: 10px !important; color: #1c2330;
 </style>
 ''', unsafe_allow_html=True)
 
-# Initialize Session State for multiple exports stored in memory/dict
 if 'exports' not in st.session_state:
     st.session_state.exports = {
         '7 - PI070826': {
@@ -93,7 +90,6 @@ if 'exports' not in st.session_state:
 if 'current_op' not in st.session_state:
     st.session_state.current_op = '7 - PI070826'
 
-# --- SIDEBAR (Panel lateral fijo) ---
 with st.sidebar:
     st.markdown("### 📦 Mis Conciliaciones")
     
@@ -172,7 +168,6 @@ if new_op_name != S_op:
 
 st.markdown(f"<div class='sub'>{st.session_state.current_op} · {f['cliente']} · Factura {f['nro']}</div>", unsafe_allow_html=True)
 
-# Factura E Section
 st.markdown("<div class='card'>", unsafe_allow_html=True)
 st.markdown("<h2>Factura E</h2>", unsafe_allow_html=True)
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -217,7 +212,7 @@ def parse_arg_number(s):
     if not s:
         return 0.0
     try:
-        s_clean = s.replace('.', '').replace(',', '.')
+        s_clean = str(s).replace('.', '').replace(',', '.')
         return float(s_clean)
     except:
         try:
@@ -230,6 +225,7 @@ for pk, p in parts.items():
     st.markdown(f"<h2>{p['n']}</h2>", unsafe_allow_html=True)
     
     col_u1, col_u2, col_u3 = st.columns(3)
+    data_changed = False
     
     with col_u1:
         up_fac = st.file_uploader(f"Factura ({p['n']})", type=['pdf'], key=f"up_fac_{st.session_state.current_op}_{pk}")
@@ -239,16 +235,19 @@ for pk, p in parts.items():
             m_nro = re.search(r'(?:Compr\.?\s*Nro[:.]?|Factura\s+N[°º]?)\s*([\d-]+)', txt, re.IGNORECASE)
             if m_nro:
                 f['nro'] = m_nro.group(1).strip()
+                data_changed = True
             
             m_cli = re.search(r'Se[ñn]or\s*\(es\)[:.]?\s*([A-Z0-9\s,\.]+)', txt, re.IGNORECASE)
             if m_cli:
                 f['cliente'] = m_cli.group(1).strip()
+                data_changed = True
             else:
                 lines = [l.strip() for l in txt.split('\n') if l.strip()]
                 for idx, l in enumerate(lines):
                     if 'Señor' in l or 'Señor(es)' in l:
                         if idx + 1 < len(lines):
                             f['cliente'] = lines[idx+1].split('848')[0].strip()
+                            data_changed = True
                             break
 
             m_fec = re.search(r'Emisi[oó]n[:.]?\s*(\d{2}[/\-]\d{2}[/\-]\d{4})', txt, re.IGNORECASE)
@@ -256,10 +255,12 @@ for pk, p in parts.items():
                 parts_d = m_fec.group(1).replace('-', '/').split('/')
                 if len(parts_d) == 3:
                     f['fecha'] = f"{parts_d[2]}-{parts_d[1]}-{parts_d[0]}"
+                    data_changed = True
 
             m_tc_fac = re.search(r'Tipo de Cambio[:.]?\s*([\d.,]+)', txt, re.IGNORECASE)
             if m_tc_fac:
                 f['tc'] = parse_arg_number(m_tc_fac.group(1))
+                data_changed = True
 
             m_imp_tot = re.search(r'Importe\s*Total\s*:\s*USD\s*([\d.,]+)', txt, re.IGNORECASE)
             if not m_imp_tot:
@@ -268,8 +269,11 @@ for pk, p in parts.items():
                 val = parse_arg_number(m_imp_tot.group(1))
                 if val > 0:
                     f['usd'] = val
+                    data_changed = True
 
-            st.success("Factura leída y procesada.")
+            if data_changed:
+                st.success("Factura leída y procesada con éxito.")
+                st.rerun()
 
     with col_u2:
         up_sw = st.file_uploader(f"Swift ({p['n']})", type=['pdf'], key=f"up_sw_{st.session_state.current_op}_{pk}")
@@ -278,13 +282,15 @@ for pk, p in parts.items():
             m_inst = re.search(r'Importe\s*instruido\s*[:.]?\s*([\d.,]+)', txt, re.IGNORECASE)
             if m_inst:
                 p['swift'] = parse_arg_number(m_inst.group(1))
-            st.success("Swift leído y procesado.")
+                st.success("Swift leído y procesado.")
+                st.rerun()
 
     with col_u3:
         up_com = st.file_uploader(f"Comisiones ({p['n']})", type=['pdf'], key=f"up_com_{st.session_state.current_op}_{pk}")
         if up_com:
             txt = extract_pdf_text_with_ocr(up_com)
             st.success("Aviso de crédito leído y procesado.")
+            st.rerun()
 
     c_f1, c_f2, c_f3, c_f4, c_f5 = st.columns(5)
     with c_f1:
