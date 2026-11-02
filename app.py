@@ -192,7 +192,7 @@ def generar_pdf_impresion(orden_id, exp_data):
             pdf.cell(115, 6, txt=f"Total operacion: ${formato_arg(swift_ars)} ARS (USD${formato_arg(usd_swift)})", ln=True)
             pdf.cell(115, 6, txt=f"1- Comision: ${formato_arg(comision_ars)} ARS", ln=True)
             pdf.cell(115, 6, txt=f"2- Gastos de Transaccion: ${formato_arg(total_gastos_bancarios)} ARS", ln=True)
-            pdf.cell(115, 6, txt=f"   (Comision: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} | IVA: ${formato_arg(iva_ars)})", ln=True)
+            pdf.cell(115, 6, txt=f"   (Comision: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} \vert{} IVA:${formato_arg(iva_ars)})", ln=True)
             pdf.cell(115, 6, txt=f"3- Resultado financiero: {txt_res}", ln=True)
         else:
             pdf.cell(115, 6, txt=f"Total operacion: USD ${formato_arg(usd_swift)}", ln=True)
@@ -260,7 +260,9 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Exportaciones Guardadas:**")
     
-    for orden, data in st.session_state['exportaciones'].items():
+    # Iteramos sobre una lista de las claves para poder eliminar elementos de forma segura
+    for orden in list(st.session_state['exportaciones'].keys()):
+        data = st.session_state['exportaciones'][orden]
         total_factura = data.get("factura", {}).get("total_usd", 0.0)
         total_cobrado = sum(s.get("usd_swift", 0.0) + s.get("gastos_swift", 0.0) for s in data.get("swifts", []))
         
@@ -275,34 +277,9 @@ with st.sidebar:
         else:
             icono = "⚪ S/F"
             
-        if st.button(f"{icono} | {orden}", key=f"btn_{orden}", use_container_width=True):
-            st.session_state['orden_actual'] = orden
-            st.rerun()
-
-# --- PANEL PRINCIPAL ---
-if st.session_state['orden_actual']:
-    orden_id = st.session_state['orden_actual']
-    exp_data = st.session_state['exportaciones'][orden_id]
-    
-    col_title, col_btn = st.columns([0.8, 0.2])
-    with col_title: st.title(f"Exportación: {orden_id}")
-    with col_btn:
-        if st.button("🗑️ Limpiar Datos", use_container_width=True):
-            st.session_state['exportaciones'][orden_id] = {"factura": {}, "swifts": [], "liquidaciones": []}
-            guardar_datos(st.session_state['exportaciones'])
-            st.rerun()
-            
-    st.markdown("Sincroniza los PDFs directamente desde la carpeta de esta exportación en Google Drive.")
-    
-    # Campo para ingresar el ID de la carpeta
-    carpeta_drive_id = st.text_input("ID de la Carpeta de Google Drive", 
-                                     help="Copia el código final de la URL cuando entras a la carpeta en Drive. Ej: 1aB2c3D4e5F6g7H8i9J0")
-
-    if st.button("Sincronizar y Procesar desde Drive", type="primary"):
-        if not carpeta_drive_id:
-            st.warning("Por favor, ingresa el ID de la carpeta.")
-        else:
-            service = obtener_servicio_drive()
-            if service:
-                with st.spinner('Conectando a Google Drive...'):
-                    archivos_drive = obtener_archivos_de_carpeta(service, carpeta_drive_id)
+        col1, col2 = st.columns([0.8, 0.2])
+        
+        with col1:
+            if st.button(f"{icono} | {orden}", key=f"btn_sel_{orden}", use_container_width=True):
+                st.session_state['orden_actual'] = orden
+                st.rerun()
