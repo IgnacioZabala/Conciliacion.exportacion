@@ -3,11 +3,9 @@ import pdfplumber
 import re
 import json
 import os
-import io
+import tempfile
+import gdown
 from fpdf import FPDF
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
 
 st.set_page_config(page_title="Conciliación de Exportaciones", layout="wide")
 
@@ -32,38 +30,6 @@ def formato_arg(numero):
     """Convierte 1234.56 a '1.234,56'"""
     s = f"{numero:,.2f}"
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
-
-# --- INTEGRACIÓN CON GOOGLE DRIVE ---
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-SERVICE_ACCOUNT_FILE = 'credentials.json'
-
-@st.cache_resource
-def obtener_servicio_drive():
-    try:
-        credentials = Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-        service = build('drive', 'v3', credentials=credentials)
-        return service
-    except Exception as e:
-        st.error(f"Error de autenticación con Drive: Verifica que el archivo credentials.json esté en la carpeta. Detalle: {e}")
-        return None
-
-def obtener_archivos_de_carpeta(service, folder_id):
-    """Obtiene la lista de archivos PDF dentro de una carpeta específica."""
-    query = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    return results.get('files', [])
-
-def descargar_pdf_en_memoria(service, file_id):
-    """Descarga el PDF y lo devuelve como un objeto BytesIO que pdfplumber puede leer."""
-    request = service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
-    fh.seek(0)
-    return fh
 
 # --- LÓGICA DE ESTADO Y MEMORIA ---
 if 'exportaciones' not in st.session_state:
@@ -306,44 +272,50 @@ if st.session_state['orden_actual']:
                 guardar_datos(st.session_state['exportaciones'])
                 st.rerun()
                 
-        st.markdown("Sincroniza los PDFs directamente desde la carpeta de esta exportación en Google Drive.")
+        st.markdown("Sincroniza los PDFs pegando el enlace público de la carpeta de Google Drive.")
         
-        carpeta_drive_id = st.text_input("ID de la Carpeta de Google Drive", 
-                                         help="Copia el código final de la URL cuando entras a la carpeta en Drive. Ej: 1aB2c3D4e5F6g7H8i9J0")
+        url_drive = st.text_input("Enlace público o ID de la Carpeta de Google Drive", 
+                                  help="Pega el enlace completo (ej: https://drive.google.com/drive/folders/1svoff...)")
 
         if st.button("Sincronizar y Procesar desde Drive", type="primary"):
-            if not carpeta_drive_id:
-                st.warning("Por favor, ingresa el ID de la carpeta.")
+            if not url_drive:
+                st.warning("Por favor, ingresa el enlace de la carpeta.")
             else:
-                service = obtener_servicio_drive()
-                if service:
-                    with st.spinner('Conectando a Google Drive...'):
-                        archivos_drive = obtener_archivos_de_carpeta(service, carpeta_drive_id)
-                        
-                        if not archivos_drive:
-                            st.info("No se encontraron PDFs en esta carpeta de Drive. Verifica que los archivos estén subidos y no en la papelera.")
-                        else:
-                            procesados = 0
-                            for archivo_info in archivos_drive:
-                                archivo_bytes = descargar_pdf_en_memoria(service, archivo_info['id'])
-                                datos = procesar_pdf(archivo_bytes)
-                                
-                                if datos["tipo"] == "Factura":
-                                    exp_data["factura"] = datos
-                                elif datos["tipo"] == "Swift":
-                                    if "swifts" not in exp_data: exp_data["swifts"] = []
-                                    exp_data["swifts"] = [s for s in exp_data["swifts"] if s.get("usd_swift") != datos.get("usd_swift")]
-                                    exp_data["swifts"].append(datos)
-                                elif datos["tipo"] == "Liquidacion":
-                                    if "liquidaciones" not in exp_data: exp_data["liquidaciones"] = []
-                                    exp_data["liquidaciones"] = [l for l in exp_data["liquidaciones"] if l.get("usd_liquidado") != datos.get("usd_liquidado")]
-                                    exp_data["liquidaciones"].append(datos)
-                                
-                                procesados += 1
-                                
-                            guardar_datos(st.session_state['exportaciones'])
-                            st.success(f"¡Sincronización completa! Se procesaron {procesados} archivos.")
-                            st.rerun()
+                with st.spinner('Descargando y procesando archivos de Google Drive...'):
+                    try:
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            # Descarga automáticamente todos los PDFs de la carpeta pública
+                            gdown.download_folder(url=url_drive, output=tmpdir, quiet=True, remaining_ok=True)
+                            
+                            archivos_encontrados = 0
+                            for root, _, files in os.walk(tmpdir):
+                                for file in files:
+                                    if file.lower().endswith('.pdf'):
+                                        filepath = os.path.join(root, file)
+                                        with open(filepath, 'rb') as f:
+                                            datos = procesar_pdf(f)
+                                            
+                                            if datos["tipo"] == "Factura":
+                                                exp_data["factura"] = datos
+                                            elif datos["tipo"] == "Swift":
+                                                if "swifts" not in exp_data: exp_data["swifts"] = []
+                                                exp_data["swifts"] = [s for s in exp_data["swifts"] if s.get("usd_swift") != datos.get("usd_swift")]
+                                                exp_data["swifts"].append(datos)
+                                            elif datos["tipo"] == "Liquidacion":
+                                                if "liquidaciones" not in exp_data: exp_data["liquidaciones"] = []
+                                                exp_data["liquidaciones"] = [l for l in exp_data["liquidaciones"] if l.get("usd_liquidado") != datos.get("usd_liquidado")]
+                                                exp_data["liquidaciones"].append(datos)
+                                            
+                                            archivos_encontrados += 1
+                            
+                            if archivos_encontrados > 0:
+                                guardar_datos(st.session_state['exportaciones'])
+                                st.success(f"¡Sincronización completa! Se procesaron {archivos_encontrados} archivos PDF.")
+                                st.rerun()
+                            else:
+                                st.error("No se encontraron archivos PDF. Verifica que la carpeta en Drive tenga el acceso configurado en 'Cualquier persona con el enlace'.")
+                    except Exception as e:
+                        st.error(f"Error al acceder a la carpeta: {e}")
 
         st.divider()
 
