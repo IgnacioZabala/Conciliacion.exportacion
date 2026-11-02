@@ -61,6 +61,9 @@ def procesar_pdf(archivo):
     texto_limpio = texto_completo.replace(',', '.')
     datos = {"tipo": "Desconocido", "tiene_texto": bool(texto_completo.strip())}
     
+    if not datos["tiene_texto"]:
+        return datos
+
     # 1. FACTURA DE EXPORTACIÓN
     if any(k in texto_upper for k in ["FACTURA DE EXPORTACIÓN", "FACTURA DE EXPORTACION", "FACTURA E"]):
         datos["tipo"] = "Factura"
@@ -76,16 +79,13 @@ def procesar_pdf(archivo):
         if tc_match: datos["tc_factura"] = float(tc_match.group(1))
         if total_match: datos["total_usd"] = float(total_match.group(1))
 
-    # 2. SWIFT (Aviso / Mensaje Swift)
+    # 2. SWIFT
     elif any(k in texto_upper for k in ["ID SWIFT", "SWIFT", "MT103", "MONTO OPERACIÓN", "MONTO OPERACION"]) and "FACTURA" not in texto_upper:
         datos["tipo"] = "Swift"
         operacion_match = re.search(r'Monto\s*operaci.n\s*:\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
         gastos_match = re.search(r'Gastos\s*de\s*transacci.n.*?:\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
         
-        if "ANTICIPO" in texto_upper:
-            datos["etiqueta"] = "Anticipo"
-        else:
-            datos["etiqueta"] = "Restante"
+        datos["etiqueta"] = "Anticipo" if "ANTICIPO" in texto_upper else "Restante"
             
         if operacion_match: datos["usd_swift"] = float(operacion_match.group(1))
         if gastos_match: datos["gastos_swift"] = float(gastos_match.group(1))
@@ -315,7 +315,7 @@ if st.session_state['orden_actual']:
                                             datos = procesar_pdf(f)
                                             
                                             if not datos.get("tiene_texto"):
-                                                resumen_procesamiento.append(f"⚠️ `{file}` parece ser una imagen o escaneo sin texto digital.")
+                                                resumen_procesamiento.append(f"⚠️ `{file}` es una imagen/escaneo sin texto editable. Usa la Carga Manual abajo.")
                                             elif datos["tipo"] == "Factura":
                                                 exp_data["factura"] = datos
                                                 resumen_procesamiento.append(f"✅ Factura leída de `{file}`")
@@ -330,7 +330,7 @@ if st.session_state['orden_actual']:
                                                 exp_data["liquidaciones"].append(datos)
                                                 resumen_procesamiento.append(f"✅ Liquidación/Cierre TC leído de `{file}`")
                                             else:
-                                                resumen_procesamiento.append(f"❓ `{file}` no pudo ser clasificado (revisa palabras clave).")
+                                                resumen_procesamiento.append(f"❓ `{file}` no pudo ser clasificado.")
                                             
                                             archivos_encontrados += 1
                             
@@ -341,9 +341,61 @@ if st.session_state['orden_actual']:
                                     st.write(msg)
                                 st.rerun()
                             else:
-                                st.error("No se encontraron archivos PDF. Verifica que la carpeta en Drive esté compartida como 'Cualquier persona con el enlace'.")
+                                st.error("No se encontraron archivos PDF. Verifica el acceso del enlace.")
                     except Exception as e:
                         st.error(f"Error al acceder a la carpeta: {e}")
+
+        st.divider()
+
+        # --- SECCIÓN DE CARGA / EDICIÓN MANUAL (PARA ESCANEOS O MANUSCRITOS) ---
+        with st.expander("✍️ Cargar o Editar Swift / Liquidación Manualmente (Para Escaneos o Fotos)"):
+            st.info("Utiliza esta opción cuando los archivos de Drive sean escaneos físicos o tengan anotaciones manuscritas.")
+            
+            tab_swift, tab_liq = st.tabs(["➕ Agregar / Editar Swift", "➕ Agregar / Editar Liquidación"])
+            
+            with tab_swift:
+                m1, m2, m3 = st.columns(3)
+                lbl_swift = m1.selectbox("Etiqueta", ["Anticipo", "Restante", "Cobro Parcial"], key="man_swift_etiqueta")
+                val_swift_usd = m2.number_input("Monto Operación (USD Neto)", min_value=0.0, step=100.0, key="man_swift_usd")
+                val_swift_gastos = m3.number_input("Gastos Transacción (USD Swift)", min_value=0.0, step=1.0, key="man_swift_gastos")
+                
+                if st.button("Guardar Swift", type="secondary"):
+                    if val_swift_usd > 0:
+                        if "swifts" not in exp_data: exp_data["swifts"] = []
+                        exp_data["swifts"] = [s for s in exp_data["swifts"] if s.get("usd_swift") != val_swift_usd]
+                        exp_data["swifts"].append({
+                            "tipo": "Swift",
+                            "etiqueta": lbl_swift,
+                            "usd_swift": val_swift_usd,
+                            "gastos_swift": val_swift_gastos
+                        })
+                        guardar_datos(st.session_state['exportaciones'])
+                        st.success(f"Swift de USD {val_swift_usd} guardado.")
+                        st.rerun()
+            
+            with tab_liq:
+                l1, l2, l3, l4 = st.columns(4)
+                val_liq_usd = l1.number_input("Monto Liquidado (USD)", min_value=0.0, step=100.0, key="man_liq_usd")
+                val_liq_tc = l2.number_input("Tipo Cambio Banco (ARS)", min_value=0.0, step=1.0, key="man_liq_tc")
+                val_liq_comision = l3.number_input("Comisión (USD)", min_value=0.0, step=1.0, key="man_liq_com")
+                val_liq_rg2408 = l4.number_input("RG2408 (USD)", min_value=0.0, step=1.0, key="man_liq_rg")
+                val_liq_iva = st.number_input("IVA 21% (USD)", min_value=0.0, step=1.0, key="man_liq_iva")
+                
+                if st.button("Guardar Liquidación", type="secondary"):
+                    if val_liq_usd > 0 and val_liq_tc > 0:
+                        if "liquidaciones" not in exp_data: exp_data["liquidaciones"] = []
+                        exp_data["liquidaciones"] = [l for l in exp_data["liquidaciones"] if l.get("usd_liquidado") != val_liq_usd]
+                        exp_data["liquidaciones"].append({
+                            "tipo": "Liquidacion",
+                            "usd_liquidado": val_liq_usd,
+                            "tc_banco": val_liq_tc,
+                            "usd_comision": val_liq_comision,
+                            "usd_rg2408": val_liq_rg2408,
+                            "usd_iva": val_liq_iva
+                        })
+                        guardar_datos(st.session_state['exportaciones'])
+                        st.success(f"Liquidación por USD {val_liq_usd} guardada.")
+                        st.rerun()
 
         st.divider()
 
@@ -430,6 +482,6 @@ if st.session_state['orden_actual']:
                 )
                 
         elif not datos_factura:
-            st.info("💡 Sincroniza los archivos desde Drive para visualizar los cálculos.")
+            st.info("💡 Sincroniza los archivos desde Drive o carga la información manualmente.")
 else:
     st.info("👈 Crea o selecciona una exportación en el panel lateral.")
