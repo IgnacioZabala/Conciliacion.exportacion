@@ -3,8 +3,6 @@ import pdfplumber
 import re
 import json
 import os
-import tempfile
-import gdown
 from fpdf import FPDF
 
 st.set_page_config(page_title="Conciliación de Exportaciones", layout="wide")
@@ -53,22 +51,18 @@ def procesar_pdf(archivo):
     texto_completo = ""
     with pdfplumber.open(archivo) as pdf:
         for pagina in pdf.pages:
-            t = pagina.extract_text()
-            if t:
-                texto_completo += t + "\n"
+            texto_completo += pagina.extract_text() + "\n"
     
-    texto_upper = texto_completo.upper()
     texto_limpio = texto_completo.replace(',', '.')
-    datos = {"tipo": "Desconocido", "tiene_texto": bool(texto_completo.strip())}
+    datos = {"tipo": "Desconocido"}
     
-    # 1. FACTURA DE EXPORTACIÓN
-    if any(k in texto_upper for k in ["FACTURA DE EXPORTACIÓN", "FACTURA DE EXPORTACION", "FACTURA E"]):
+    if "FACTURA DE EXPORTACIÓN" in texto_completo.upper():
         datos["tipo"] = "Factura"
-        nro_match = re.search(r'Compr\.?\s*Nro:?\s*([\d\-]+)', texto_completo, re.IGNORECASE)
-        fecha_match = re.search(r'Fecha de Emisión:?\s*([\d\/]+)', texto_completo, re.IGNORECASE)
-        cliente_match = re.search(r'Señor\(es\):?\s*(.+)', texto_completo, re.IGNORECASE)
-        tc_match = re.search(r'Tipo de Cambio:?\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
-        total_match = re.search(r'Importe Total:?\s*(?:USD)?\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
+        nro_match = re.search(r'Compr\. Nro:\s*([\d\-]+)', texto_completo)
+        fecha_match = re.search(r'Fecha de Emisión:\s*([\d\/]+)', texto_completo)
+        cliente_match = re.search(r'Señor\(es\):\s*(.+)', texto_completo)
+        tc_match = re.search(r'Tipo de Cambio:\s*([\d\.]+)', texto_limpio)
+        total_match = re.search(r'Importe Total:\s*USD\s*([\d\.]+)', texto_limpio)
         
         if nro_match: datos["nro_factura"] = nro_match.group(1).strip()
         if fecha_match: datos["fecha"] = fecha_match.group(1).strip()
@@ -76,13 +70,12 @@ def procesar_pdf(archivo):
         if tc_match: datos["tc_factura"] = float(tc_match.group(1))
         if total_match: datos["total_usd"] = float(total_match.group(1))
 
-    # 2. SWIFT (Aviso / Mensaje Swift)
-    elif any(k in texto_upper for k in ["ID SWIFT", "SWIFT", "MT103", "MONTO OPERACIÓN", "MONTO OPERACION"]) and "FACTURA" not in texto_upper:
+    elif "ID SWIFT" in texto_completo.upper():
         datos["tipo"] = "Swift"
-        operacion_match = re.search(r'Monto\s*operaci.n\s*:\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
-        gastos_match = re.search(r'Gastos\s*de\s*transacci.n.*?:\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
+        operacion_match = re.search(r'Monto operación\s*:\s*([\d\.]+)', texto_limpio)
+        gastos_match = re.search(r'Gastos de transacci.n.*?:\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
         
-        if "ANTICIPO" in texto_upper:
+        if "ANTICIPO" in texto_completo.upper():
             datos["etiqueta"] = "Anticipo"
         else:
             datos["etiqueta"] = "Restante"
@@ -90,10 +83,9 @@ def procesar_pdf(archivo):
         if operacion_match: datos["usd_swift"] = float(operacion_match.group(1))
         if gastos_match: datos["gastos_swift"] = float(gastos_match.group(1))
 
-    # 3. LIQUIDACIÓN / AVISO DE CRÉDITO / CIERRE TC
-    elif any(k in texto_upper for k in ["AVISO DE CREDITO", "AVISO DE CRÉDITO", "HEMOS LIQUIDADO", "LIQUIDACION", "LIQUIDACIÓN", "CIERRE TC", "B01-COBROS", "ORDEN DE PAGO"]):
+    elif "AVISO DE CREDITO" in texto_completo.upper():
         datos["tipo"] = "Liquidacion"
-        liq_match = re.search(r'(?:B01-COBROS DE EXPORTACIONES DE BIENES|COBROS DE EXPORTACIONES).*?USD\s*([\d\.]+)\s*([\d\.]+)', texto_limpio, re.DOTALL | re.IGNORECASE)
+        liq_match = re.search(r'B01-COBROS DE EXPORTACIONES DE BIENES.*?USD\s*([\d\.]+)\s*([\d\.]+)', texto_limpio, re.DOTALL)
         
         if liq_match:
             datos["usd_liquidado"] = float(liq_match.group(1))
@@ -102,12 +94,6 @@ def procesar_pdf(archivo):
             datos["usd_comision"] = extraer_monto_usd(texto_limpio, "COMISION", tc_banco)
             datos["usd_rg2408"] = extraer_monto_usd(texto_limpio, "RG2408", tc_banco)
             datos["usd_iva"] = extraer_monto_usd(texto_limpio, "IVA 21%", tc_banco)
-        else:
-            # Búsqueda alternativa si cambia la disposición de columnas
-            usd_match = re.search(r'USD\s*([\d\.]+)', texto_limpio)
-            tc_banco_match = re.search(r'(?:TIPO CAMBIO|TC|CAMBIO)\s*:?\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
-            if usd_match: datos["usd_liquidado"] = float(usd_match.group(1))
-            if tc_banco_match: datos["tc_banco"] = float(tc_banco_match.group(1))
             
     return datos
 
@@ -120,6 +106,7 @@ def generar_pdf_impresion(orden_id, exp_data):
     pdf.cell(0, 10, txt=f"Conciliacion de Exportacion: {orden_id}", ln=True, align="C")
     pdf.ln(5)
 
+    # Datos Factura
     datos_factura = exp_data.get("factura", {})
     tc_factura = datos_factura.get("tc_factura", 0.0)
     total_factura_usd = datos_factura.get('total_usd', 0.0)
@@ -159,6 +146,7 @@ def generar_pdf_impresion(orden_id, exp_data):
             rg2408_ars = liq.get("usd_rg2408", 0.0) * tc_banco
             iva_ars = liq.get("usd_iva", 0.0) * tc_banco
             
+            # Total de gastos bancarios (comisión + rg2408 + iva)
             total_gastos_bancarios = comision_ars + rg2408_ars + iva_ars
             
             brecha = tc_banco - tc_factura
@@ -178,6 +166,7 @@ def generar_pdf_impresion(orden_id, exp_data):
             pdf.cell(115, 6, txt=f"2- Gastos de Transaccion: USD ${formato_arg(gastos_swift)}", ln=True)
             pdf.cell(115, 6, txt="3- Resultado financiero: (Falta Aviso de Credito)", ln=True)
 
+        # SELLO CONTABLE
         x_sello = 130
         w_sello = 70
         h_sello = 32
@@ -197,6 +186,7 @@ def generar_pdf_impresion(orden_id, exp_data):
         y_final = max(pdf.get_y(), y_start + h_sello)
         pdf.set_y(y_final + 15)
 
+    # BLOQUE DE VALIDACIÓN MATEMÁTICA EN PDF
     if total_factura_usd > 0 and total_instruido > 0:
         pdf.ln(5)
         pdf.line(10, pdf.get_y(), 200, pdf.get_y())
@@ -222,6 +212,7 @@ def generar_pdf_impresion(orden_id, exp_data):
 
     return bytes(pdf.output())
 
+
 # --- PANEL LATERAL ---
 with st.sidebar:
     st.title("📁 Mis Exportaciones")
@@ -238,8 +229,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Exportaciones Guardadas:**")
     
-    for orden in list(st.session_state['exportaciones'].keys()):
-        data = st.session_state['exportaciones'][orden]
+    for orden, data in st.session_state['exportaciones'].items():
         total_factura = data.get("factura", {}).get("total_usd", 0.0)
         total_cobrado = sum(s.get("usd_swift", 0.0) + s.get("gastos_swift", 0.0) for s in data.get("swifts", []))
         
@@ -254,180 +244,135 @@ with st.sidebar:
         else:
             icono = "⚪ S/F"
             
-        col1, col2 = st.columns([0.8, 0.2])
-        
-        with col1:
-            if st.button(f"{icono} | {orden}", key=f"btn_sel_{orden}", use_container_width=True):
-                st.session_state['orden_actual'] = orden
-                st.rerun()
-                
-        with col2:
-            if st.button("❌", key=f"btn_del_{orden}", use_container_width=True, help="Eliminar esta exportación"):
-                del st.session_state['exportaciones'][orden]
-                if st.session_state['orden_actual'] == orden:
-                    st.session_state['orden_actual'] = None
-                guardar_datos(st.session_state['exportaciones'])
-                st.rerun()
+        if st.button(f"{icono} | {orden}", key=f"btn_{orden}", use_container_width=True):
+            st.session_state['orden_actual'] = orden
+            st.rerun()
 
 # --- PANEL PRINCIPAL ---
 if st.session_state['orden_actual']:
     orden_id = st.session_state['orden_actual']
+    exp_data = st.session_state['exportaciones'][orden_id]
     
-    if orden_id in st.session_state['exportaciones']:
-        exp_data = st.session_state['exportaciones'][orden_id]
+    col_title, col_btn = st.columns([0.8, 0.2])
+    with col_title: st.title(f"Exportación: {orden_id}")
+    with col_btn:
+        if st.button("🗑️ Limpiar Datos", use_container_width=True):
+            st.session_state['exportaciones'][orden_id] = {"factura": {}, "swifts": [], "liquidaciones": []}
+            guardar_datos(st.session_state['exportaciones'])
+            st.rerun()
+            
+    st.markdown("Carga los PDFs (Factura, Swifts y Avisos de Crédito) correspondientes.")
+    archivos = st.file_uploader("Subir archivos PDF", type="pdf", accept_multiple_files=True, key=f"uploader_{orden_id}")
+    
+    if st.button("Procesar Archivos", type="primary"):
+        for archivo in archivos:
+            datos = procesar_pdf(archivo)
+            if datos["tipo"] == "Factura":
+                exp_data["factura"] = datos
+            elif datos["tipo"] == "Swift":
+                if "swifts" not in exp_data: exp_data["swifts"] = []
+                exp_data["swifts"] = [s for s in exp_data["swifts"] if s.get("usd_swift") != datos.get("usd_swift")]
+                exp_data["swifts"].append(datos)
+            elif datos["tipo"] == "Liquidacion":
+                if "liquidaciones" not in exp_data: exp_data["liquidaciones"] = []
+                exp_data["liquidaciones"] = [l for l in exp_data["liquidaciones"] if l.get("usd_liquidado") != datos.get("usd_liquidado")]
+                exp_data["liquidaciones"].append(datos)
         
-        col_title, col_btn = st.columns([0.8, 0.2])
-        with col_title: st.title(f"Exportación: {orden_id}")
-        with col_btn:
-            if st.button("🗑️ Limpiar Datos", use_container_width=True):
-                st.session_state['exportaciones'][orden_id] = {"factura": {}, "swifts": [], "liquidaciones": []}
-                guardar_datos(st.session_state['exportaciones'])
-                st.rerun()
-                
-        st.markdown("Sincroniza los PDFs pegando el enlace público o el ID de la carpeta de Google Drive.")
-        
-        url_input = st.text_input("Enlace público o ID de la Carpeta de Google Drive", 
-                                  help="Pega el enlace completo o solo el ID (ej: 1svoff-a3-lofiFjrqeANIXOPThDvPM38)")
+        guardar_datos(st.session_state['exportaciones'])
+        st.success("Archivos procesados y guardados en memoria.")
+        st.rerun()
 
-        if st.button("Sincronizar y Procesar desde Drive", type="primary"):
-            if not url_input:
-                st.warning("Por favor, ingresa el enlace o ID de la carpeta.")
-            else:
-                url_drive = url_input.strip()
-                if not url_drive.startswith("http"):
-                    url_drive = f"https://drive.google.com/drive/folders/{url_drive}"
-                
-                with st.spinner('Descargando y procesando archivos de Google Drive...'):
-                    try:
-                        with tempfile.TemporaryDirectory() as tmpdir:
-                            gdown.download_folder(url=url_drive, output=tmpdir, quiet=True)
-                            
-                            resumen_procesamiento = []
-                            archivos_encontrados = 0
-                            
-                            for root, _, files in os.walk(tmpdir):
-                                for file in files:
-                                    if file.lower().endswith('.pdf'):
-                                        filepath = os.path.join(root, file)
-                                        with open(filepath, 'rb') as f:
-                                            datos = procesar_pdf(f)
-                                            
-                                            if not datos.get("tiene_texto"):
-                                                resumen_procesamiento.append(f"⚠️ `{file}` parece ser una imagen o escaneo sin texto digital.")
-                                            elif datos["tipo"] == "Factura":
-                                                exp_data["factura"] = datos
-                                                resumen_procesamiento.append(f"✅ Factura leída de `{file}`")
-                                            elif datos["tipo"] == "Swift":
-                                                if "swifts" not in exp_data: exp_data["swifts"] = []
-                                                exp_data["swifts"] = [s for s in exp_data["swifts"] if s.get("usd_swift") != datos.get("usd_swift")]
-                                                exp_data["swifts"].append(datos)
-                                                resumen_procesamiento.append(f"✅ Swift ({datos.get('etiqueta')}) leído de `{file}`")
-                                            elif datos["tipo"] == "Liquidacion":
-                                                if "liquidaciones" not in exp_data: exp_data["liquidaciones"] = []
-                                                exp_data["liquidaciones"] = [l for l in exp_data["liquidaciones"] if l.get("usd_liquidado") != datos.get("usd_liquidado")]
-                                                exp_data["liquidaciones"].append(datos)
-                                                resumen_procesamiento.append(f"✅ Liquidación/Cierre TC leído de `{file}`")
-                                            else:
-                                                resumen_procesamiento.append(f"❓ `{file}` no pudo ser clasificado (revisa palabras clave).")
-                                            
-                                            archivos_encontrados += 1
-                            
-                            if archivos_encontrados > 0:
-                                guardar_datos(st.session_state['exportaciones'])
-                                st.success(f"¡Procesamiento finalizado! Archivos analizados: {archivos_encontrados}")
-                                for msg in resumen_procesamiento:
-                                    st.write(msg)
-                                st.rerun()
-                            else:
-                                st.error("No se encontraron archivos PDF. Verifica que la carpeta en Drive esté compartida como 'Cualquier persona con el enlace'.")
-                    except Exception as e:
-                        st.error(f"Error al acceder a la carpeta: {e}")
+    st.divider()
 
+    datos_factura = exp_data.get("factura", {})
+    tc_factura = datos_factura.get("tc_factura", 0.0)
+    total_usd_factura = datos_factura.get("total_usd", 0.0)
+    swifts_guardados = exp_data.get("swifts", [])
+    liquidaciones_guardadas = exp_data.get("liquidaciones", [])
+
+    # Datos Factura UI
+    if datos_factura:
+        st.subheader("🧾 Datos de la Factura")
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(f"**Fecha:** {datos_factura.get('fecha', 'N/A')}")
+        c1.markdown(f"**Número:** {datos_factura.get('nro_factura', 'N/A')}")
+        c2.markdown(f"**Cliente:** {datos_factura.get('cliente', 'N/A')}")
+        c3.markdown(f"**Monto:** USD ${formato_arg(total_usd_factura)}")
+        c3.markdown(f"**Tipo de Cambio:** {formato_arg(tc_factura)}")
         st.divider()
 
-        datos_factura = exp_data.get("factura", {})
-        tc_factura = datos_factura.get("tc_factura", 0.0)
-        total_usd_factura = datos_factura.get("total_usd", 0.0)
-        swifts_guardados = exp_data.get("swifts", [])
-        liquidaciones_guardadas = exp_data.get("liquidaciones", [])
-
-        if datos_factura:
-            st.subheader("🧾 Datos de la Factura")
-            c1, c2, c3 = st.columns(3)
-            c1.markdown(f"**Fecha:** {datos_factura.get('fecha', 'N/A')}")
-            c1.markdown(f"**Número:** {datos_factura.get('nro_factura', 'N/A')}")
-            c2.markdown(f"**Cliente:** {datos_factura.get('cliente', 'N/A')}")
-            c3.markdown(f"**Monto:** USD ${formato_arg(total_usd_factura)}")
-            c3.markdown(f"**Tipo de Cambio:** {formato_arg(tc_factura)}")
-            st.divider()
-
-        if tc_factura > 0 and swifts_guardados:
-            swifts_ordenados = sorted(swifts_guardados, key=lambda x: 0 if x.get("etiqueta") == "Anticipo" else 1)
+    # Datos Cobros UI
+    if tc_factura > 0 and swifts_guardados:
+        swifts_ordenados = sorted(swifts_guardados, key=lambda x: 0 if x.get("etiqueta") == "Anticipo" else 1)
+        
+        for swift in swifts_ordenados:
+            etiqueta = swift.get("etiqueta", "Cobro")
+            usd_swift = swift.get("usd_swift", 0.0)
+            gastos_swift = swift.get("gastos_swift", 0.0)
+            liq = next((l for l in liquidaciones_guardadas if abs(l.get("usd_liquidado", 0) - usd_swift) < 1.0), None)
             
-            for swift in swifts_ordenados:
-                etiqueta = swift.get("etiqueta", "Cobro")
-                usd_swift = swift.get("usd_swift", 0.0)
-                gastos_swift = swift.get("gastos_swift", 0.0)
-                liq = next((l for l in liquidaciones_guardadas if abs(l.get("usd_liquidado", 0) - usd_swift) < 1.0), None)
+            st.subheader(f"📌 {etiqueta}:")
+            
+            if liq:
+                tc_banco = liq.get("tc_banco", 0.0)
                 
-                st.subheader(f"📌 {etiqueta}:")
+                swift_ars = usd_swift * tc_banco
+                comision_ars = liq.get("usd_comision", 0.0) * tc_banco
+                rg2408_ars = liq.get("usd_rg2408", 0.0) * tc_banco
+                iva_ars = liq.get("usd_iva", 0.0) * tc_banco
                 
-                if liq:
-                    tc_banco = liq.get("tc_banco", 0.0)
-                    swift_ars = usd_swift * tc_banco
-                    comision_ars = liq.get("usd_comision", 0.0) * tc_banco
-                    rg2408_ars = liq.get("usd_rg2408", 0.0) * tc_banco
-                    iva_ars = liq.get("usd_iva", 0.0) * tc_banco
-                    total_gastos_bancarios = comision_ars + rg2408_ars + iva_ars
-                    
-                    brecha = tc_banco - tc_factura
-                    resultado_ars = usd_swift * brecha
-                    
-                    if resultado_ars < 0: txt_res = f"-${formato_arg(abs(resultado_ars))} ARS"
-                    else: txt_res = f"${formato_arg(resultado_ars)} ARS"
+                total_gastos_bancarios = comision_ars + rg2408_ars + iva_ars
+                
+                brecha = tc_banco - tc_factura
+                resultado_ars = usd_swift * brecha
+                
+                if resultado_ars < 0: txt_res = f"-${formato_arg(abs(resultado_ars))} ARS"
+                else: txt_res = f"${formato_arg(resultado_ars)} ARS"
 
-                    st.markdown(f"**Total operación:** ${formato_arg(swift_ars)} ARS (USD ${formato_arg(usd_swift)})")
-                    st.markdown(f"**1- Comisión:** ${formato_arg(comision_ars)} ARS")
-                    st.markdown(f"**2- Gastos de Transacción:** ${formato_arg(total_gastos_bancarios)} ARS  \n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*(Comisión: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} | IVA: ${formato_arg(iva_ars)})*")
-                    st.markdown(f"**3- Resultado financiero:** {txt_res}")
-                else:
-                    st.markdown(f"**Total operación:** USD ${formato_arg(usd_swift)}")
-                    st.markdown(f"**1- Comisión:** (Falta Aviso de Crédito)")
-                    st.markdown(f"**2- Gastos de Transacción:** USD ${formato_arg(gastos_swift)}")
-                    st.markdown(f"**3- Resultado financiero:** (Falta Aviso de Crédito)")
-                st.write("")
-            
-            st.divider()
-            st.subheader("📊 Resumen de Validación")
-            total_instruido = 0.0
-            for swift in swifts_ordenados:
-                s_neto = swift.get("usd_swift", 0.0)
-                s_gasto = swift.get("gastos_swift", 0.0)
-                total_instruido += (s_neto + s_gasto)
-                st.markdown(f"- **{swift.get('etiqueta')}**: USD ${formato_arg(s_neto)} (Neto) + USD ${formato_arg(s_gasto)} (Gasto Swift) = **USD ${formato_arg(s_neto + s_gasto)}**")
-            
-            st.markdown(f"**Total Pagado por el Cliente:** USD ${formato_arg(total_instruido)}")
-            st.markdown(f"**Total Facturado:** USD ${formato_arg(total_usd_factura)}")
-            
-            if abs(total_usd_factura - total_instruido) < 0.01:
-                st.success("✅ **La exportación está 100% cobrada.** (Los montos coinciden exactamente).")
+                st.markdown(f"**Total operación:** ${formato_arg(swift_ars)} ARS (USD ${formato_arg(usd_swift)})")
+                st.markdown(f"**1- Comisión:** ${formato_arg(comision_ars)} ARS")
+                st.markdown(f"**2- Gastos de Transacción:** ${formato_arg(total_gastos_bancarios)} ARS  \n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*(Comisión: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} | IVA: ${formato_arg(iva_ars)})*")
+                st.markdown(f"**3- Resultado financiero:** {txt_res}")
             else:
-                diferencia = total_usd_factura - total_instruido
-                st.warning(f"⚠️ **Diferencia Pendiente:** USD ${formato_arg(diferencia)}")
-                
+                st.markdown(f"**Total operación:** USD ${formato_arg(usd_swift)}")
+                st.markdown(f"**1- Comisión:** (Falta Aviso de Crédito)")
+                st.markdown(f"**2- Gastos de Transacción:** USD ${formato_arg(gastos_swift)}")
+                st.markdown(f"**3- Resultado financiero:** (Falta Aviso de Crédito)")
             st.write("")
-            col_pdf, _ = st.columns([0.4, 0.6])
-            with col_pdf:
-                pdf_bytes = generar_pdf_impresion(orden_id, exp_data)
-                st.download_button(
-                    label="🖨️ Descargar PDF para Imprimir",
-                    data=pdf_bytes,
-                    file_name=f"Conciliacion_{orden_id}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-                
-        elif not datos_factura:
-            st.info("💡 Sincroniza los archivos desde Drive para visualizar los cálculos.")
+        
+        # VALIDACIÓN MATEMÁTICA UI
+        st.divider()
+        st.subheader("📊 Resumen de Validación")
+        total_instruido = 0.0
+        for swift in swifts_ordenados:
+            s_neto = swift.get("usd_swift", 0.0)
+            s_gasto = swift.get("gastos_swift", 0.0)
+            total_instruido += (s_neto + s_gasto)
+            st.markdown(f"- **{swift.get('etiqueta')}**: USD ${formato_arg(s_neto)} (Neto) + USD ${formato_arg(s_gasto)} (Gasto Swift) = **USD ${formato_arg(s_neto + s_gasto)}**")
+        
+        st.markdown(f"**Total Pagado por el Cliente:** USD ${formato_arg(total_instruido)}")
+        st.markdown(f"**Total Facturado:** USD ${formato_arg(total_usd_factura)}")
+        
+        if abs(total_usd_factura - total_instruido) < 0.01:
+            st.success("✅ **La exportación está 100% cobrada.** (Los montos coinciden exactamente).")
+        else:
+            diferencia = total_usd_factura - total_instruido
+            st.warning(f"⚠️ **Diferencia Pendiente:** USD ${formato_arg(diferencia)}")
+            
+        # BOTÓN DESCARGA PDF
+        st.write("")
+        col_pdf, _ = st.columns([0.4, 0.6])
+        with col_pdf:
+            pdf_bytes = generar_pdf_impresion(orden_id, exp_data)
+            st.download_button(
+                label="🖨️ Descargar PDF para Imprimir",
+                data=pdf_bytes,
+                file_name=f"Conciliacion_{orden_id}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+            
+    elif not datos_factura:
+        st.info("💡 Asegúrate de cargar la Factura de Exportación para visualizar los cálculos.")
 else:
     st.info("👈 Crea o selecciona una exportación en el panel lateral.")
