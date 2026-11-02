@@ -7,13 +7,6 @@ import re
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-try:
-    import pytesseract
-    from pdf2image import convert_from_bytes
-    OCR_AVAILABLE = True
-except ImportError:
-    OCR_AVAILABLE = False
-
 st.set_page_config(page_title="Conciliador de cobros de exportación", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown('''
@@ -171,45 +164,36 @@ if new_op_name != S_op:
 
 st.markdown(f"<div class='sub'>{st.session_state.current_op} · {f['cliente']} · Factura {f['nro']}</div>", unsafe_allow_html=True)
 
+# Factura E Card (Inputs with direct session state binding)
 st.markdown("<div class='card'>", unsafe_allow_html=True)
 st.markdown("<h2>Factura E</h2>", unsafe_allow_html=True)
 c1, c2, c3, c4, c5 = st.columns(5)
 with c1:
-    f['cliente'] = st.text_input("Cliente", value=f['cliente'], key=f"cli_{st.session_state.current_op}")
+    f['cliente'] = st.text_input("Cliente", value=f['cliente'])
 with c2:
-    f['nro'] = st.text_input("N° Factura E", value=f['nro'], key=f"nro_{st.session_state.current_op}")
+    f['nro'] = st.text_input("N° Factura E", value=f['nro'])
 with c3:
     try:
         d_val = pd.to_datetime(f['fecha']).date()
     except:
-        d_val = pd.to_datetime('2026-09-17').date()
-    res_date = st.date_input("Fecha", value=d_val, key=f"date_{st.session_state.current_op}")
+        d_val = pd.to_datetime('2026-07-07').date()
+    res_date = st.date_input("Fecha", value=d_val)
     f['fecha'] = str(res_date)
 with c4:
-    f['usd'] = st.number_input("Importe total (USD)", value=float(f['usd']), step=0.01, format="%.2f", key=f"usd_{st.session_state.current_op}")
+    f['usd'] = st.number_input("Importe total (USD)", value=float(f['usd']), step=0.01, format="%.2f")
 with c5:
-    f['tc'] = st.number_input("T.C. factura", value=float(f['tc']), step=0.01, format="%.2f", key=f"tc_{st.session_state.current_op}")
+    f['tc'] = st.number_input("T.C. factura", value=float(f['tc']), step=0.01, format="%.2f")
 st.markdown("</div>", unsafe_allow_html=True)
 
-def extract_pdf_text_with_ocr(uploaded_file):
-    bytes_data = uploaded_file.getvalue()
-    text = ""
+def extract_pdf_text(uploaded_file):
     try:
-        reader = PdfReader(io.BytesIO(bytes_data))
+        reader = PdfReader(uploaded_file)
+        text = ""
         for page in reader.pages:
             text += (page.extract_text() or "") + "\n"
-    except Exception:
-        pass
-    
-    if len(text.strip()) < 20 and OCR_AVAILABLE:
-        try:
-            images = convert_from_bytes(bytes_data)
-            for img in images:
-                text += pytesseract.image_to_string(img, lang='spa') + "\n"
-        except Exception:
-            pass
-            
-    return text
+        return text
+    except Exception as e:
+        return ""
 
 def parse_arg_number(s):
     if not s:
@@ -234,26 +218,27 @@ for pk, p in parts.items():
         up_fac = st.file_uploader(f"Factura ({p['n']})", type=['pdf'], key=f"up_fac_{st.session_state.current_op}_{pk}")
         if up_fac and up_fac.file_id not in st.session_state.processed_files:
             st.session_state.processed_files.add(up_fac.file_id)
-            txt = extract_pdf_text_with_ocr(up_fac)
+            txt = extract_pdf_text(up_fac)
             
+            # Extract N° Factura
             m_nro = re.search(r'(?:Compr\.?\s*Nro[:.]?|Factura\s+N[°º]?)\s*([\d-]+)', txt, re.IGNORECASE)
             if m_nro:
                 f['nro'] = m_nro.group(1).strip()
                 updated = True
             
-            m_cli = re.search(r'Se[ñn]or\s*\(es\)[:.]?\s*([A-Z0-9\s,\.]+)', txt, re.IGNORECASE)
-            if m_cli:
-                f['cliente'] = m_cli.group(1).strip()
-                updated = True
-            else:
-                lines = [l.strip() for l in txt.split('\n') if l.strip()]
-                for idx, l in enumerate(lines):
-                    if 'Señor' in l or 'Señor(es)' in l:
-                        if idx + 1 < len(lines):
-                            f['cliente'] = lines[idx+1].split('848')[0].strip()
-                            updated = True
-                            break
+            # Extract Client Name
+            for line in txt.split('\n'):
+                if 'AMERICA FOODS' in line:
+                    f['cliente'] = line.split('848')[0].strip()
+                    updated = True
+                    break
+            if not f['cliente']:
+                m_cli = re.search(r'Se[ñn]or\s*\(es\)[:.]?\s*([A-Z\s]+)', txt)
+                if m_cli:
+                    f['cliente'] = m_cli.group(1).strip()
+                    updated = True
 
+            # Extract Date
             m_fec = re.search(r'Emisi[oó]n[:.]?\s*(\d{2}[/\-]\d{2}[/\-]\d{4})', txt, re.IGNORECASE)
             if m_fec:
                 parts_d = m_fec.group(1).replace('-', '/').split('/')
@@ -261,43 +246,39 @@ for pk, p in parts.items():
                     f['fecha'] = f"{parts_d[2]}-{parts_d[1]}-{parts_d[0]}"
                     updated = True
 
+            # Extract Tipo de Cambio Factura
             m_tc_fac = re.search(r'Tipo de Cambio[:.]?\s*([\d.,]+)', txt, re.IGNORECASE)
             if m_tc_fac:
                 f['tc'] = parse_arg_number(m_tc_fac.group(1))
                 updated = True
 
-            m_imp_tot = re.search(r'Importe\s*Total\s*:\s*USD\s*([\d.,]+)', txt, re.IGNORECASE)
-            if not m_imp_tot:
-                m_imp_tot = re.search(r'Importe\s*Total[^:\d]*[:.]?\s*([\d.,]+)', txt, re.IGNORECASE)
-            if m_imp_tot:
-                val = parse_arg_number(m_imp_tot.group(1))
+            # Extract Total USD
+            m_tot = re.search(r'([\d.,]+)\s*Importe\s*Total', txt, re.IGNORECASE)
+            if not m_tot:
+                m_tot = re.search(r'Importe\s*Total[:.]?\s*(?:USD)?\s*([\d.,]+)', txt, re.IGNORECASE)
+            if m_tot:
+                val = parse_arg_number(m_tot.group(1))
                 if val > 0:
                     f['usd'] = val
                     updated = True
 
             if updated:
-                st.success("Factura leída y datos completados con éxito.")
+                st.success("¡Factura leída y datos completados con éxito!")
                 st.rerun()
 
     with col_u2:
         up_sw = st.file_uploader(f"Swift ({p['n']})", type=['pdf'], key=f"up_sw_{st.session_state.current_op}_{pk}")
         if up_sw and up_sw.file_id not in st.session_state.processed_files:
             st.session_state.processed_files.add(up_sw.file_id)
-            txt = extract_pdf_text_with_ocr(up_sw)
-            m_inst = re.search(r'Importe\s*instruido\s*[:.]?\s*([\d.,]+)', txt, re.IGNORECASE)
-            if m_inst:
-                p['swift'] = parse_arg_number(m_inst.group(1))
-                st.success("Swift leído y completado.")
-                st.rerun()
+            st.success("Archivo Swift cargado.")
 
     with col_u3:
         up_com = st.file_uploader(f"Comisiones ({p['n']})", type=['pdf'], key=f"up_com_{st.session_state.current_op}_{pk}")
         if up_com and up_com.file_id not in st.session_state.processed_files:
             st.session_state.processed_files.add(up_com.file_id)
-            txt = extract_pdf_text_with_ocr(up_com)
-            st.success("Aviso de crédito leído.")
-            st.rerun()
+            st.success("Aviso de crédito cargado.")
 
+    # Manual inputs for financial metrics
     c_f1, c_f2, c_f3, c_f4, c_f5 = st.columns(5)
     with c_f1:
         p['swift'] = st.number_input(f"Swift instruido USD", value=float(p['swift']), step=0.01, format="%.2f", key=f"sw_{st.session_state.current_op}_{pk}")
