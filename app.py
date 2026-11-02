@@ -192,7 +192,7 @@ def generar_pdf_impresion(orden_id, exp_data):
             pdf.cell(115, 6, txt=f"Total operacion: ${formato_arg(swift_ars)} ARS (USD${formato_arg(usd_swift)})", ln=True)
             pdf.cell(115, 6, txt=f"1- Comision: ${formato_arg(comision_ars)} ARS", ln=True)
             pdf.cell(115, 6, txt=f"2- Gastos de Transaccion: ${formato_arg(total_gastos_bancarios)} ARS", ln=True)
-            pdf.cell(115, 6, txt=f"   (Comision: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} \vert{} IVA:${formato_arg(iva_ars)})", ln=True)
+            pdf.cell(115, 6, txt=f"   (Comision: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} | IVA: ${formato_arg(iva_ars)})", ln=True)
             pdf.cell(115, 6, txt=f"3- Resultado financiero: {txt_res}", ln=True)
         else:
             pdf.cell(115, 6, txt=f"Total operacion: USD ${formato_arg(usd_swift)}", ln=True)
