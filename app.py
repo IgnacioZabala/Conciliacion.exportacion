@@ -272,20 +272,25 @@ if st.session_state['orden_actual']:
                 guardar_datos(st.session_state['exportaciones'])
                 st.rerun()
                 
-        st.markdown("Sincroniza los PDFs pegando el enlace público de la carpeta de Google Drive.")
+        st.markdown("Sincroniza los PDFs pegando el enlace público o el ID de la carpeta de Google Drive.")
         
-        url_drive = st.text_input("Enlace público o ID de la Carpeta de Google Drive", 
-                                  help="Pega el enlace completo (ej: https://drive.google.com/drive/folders/1svoff...)")
+        url_input = st.text_input("Enlace público o ID de la Carpeta de Google Drive", 
+                                  help="Pega el enlace completo o solo el ID (ej: 1svoff-a3-lofiFjrqeANIXOPThDvPM38)")
 
         if st.button("Sincronizar y Procesar desde Drive", type="primary"):
-            if not url_drive:
-                st.warning("Por favor, ingresa el enlace de la carpeta.")
+            if not url_input:
+                st.warning("Por favor, ingresa el enlace o ID de la carpeta.")
             else:
+                # Normalizamos la URL si el usuario solo ingresó el ID
+                url_drive = url_input.strip()
+                if not url_drive.startswith("http"):
+                    url_drive = f"https://drive.google.com/drive/folders/{url_drive}"
+                
                 with st.spinner('Descargando y procesando archivos de Google Drive...'):
                     try:
                         with tempfile.TemporaryDirectory() as tmpdir:
-                            # Descarga automáticamente todos los PDFs de la carpeta pública
-                            gdown.download_folder(url=url_drive, output=tmpdir, quiet=True, remaining_ok=True)
+                            # Se eliminó el parámetro incompatible 'remaining_ok'
+                            gdown.download_folder(url=url_drive, output=tmpdir, quiet=True)
                             
                             archivos_encontrados = 0
                             for root, _, files in os.walk(tmpdir):
