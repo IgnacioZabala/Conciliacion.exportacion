@@ -305,4 +305,4 @@ if st.session_state['orden_actual']:
             service = obtener_servicio_drive()
             if service:
                 with st.spinner('Conectando a Google Drive...'):
-                    archivos_drive = obtener_archivos_de_carpeta(service, carpeta_drive
+                    archivos_drive = obtener_archivos_de_carpeta(service, carpeta_drive_id)
