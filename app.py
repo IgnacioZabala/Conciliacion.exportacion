@@ -5,7 +5,7 @@ from pypdf import PdfReader
 import io
 import re
 from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen::canvas import Canvas if False else canvas
+from reportlab.pdfgen import canvas
 
 # Importaciones opcionales para soporte OCR en PDFs escaneados
 try:
@@ -196,7 +196,6 @@ st.markdown("</div>", unsafe_allow_html=True)
 def extract_pdf_text_with_ocr(uploaded_file):
     bytes_data = uploaded_file.getvalue()
     text = ""
-    # 1. Intentar extracción de texto nativa
     try:
         reader = PdfReader(io.BytesIO(bytes_data))
         for page in reader.pages:
@@ -204,7 +203,6 @@ def extract_pdf_text_with_ocr(uploaded_file):
     except Exception:
         pass
     
-    # 2. Si el texto es muy corto o vacío y OCR está disponible, usar Tesseract OCR
     if len(text.strip()) < 20 and OCR_AVAILABLE:
         try:
             images = convert_from_bytes(bytes_data)
@@ -227,7 +225,6 @@ def parse_arg_number(s):
         except:
             return 0.0
 
-# Process PDF uploads and robustly parse Factura, Swift, and Comisiones
 for pk, p in parts.items():
     st.markdown(f"<div class='card'>", unsafe_allow_html=True)
     st.markdown(f"<h2>{p['n']}</h2>", unsafe_allow_html=True)
@@ -289,7 +286,6 @@ for pk, p in parts.items():
             txt = extract_pdf_text_with_ocr(up_com)
             st.success("Aviso de crédito leído y procesado.")
 
-    # Input fields
     c_f1, c_f2, c_f3, c_f4, c_f5 = st.columns(5)
     with c_f1:
         p['swift'] = st.number_input(f"Swift instruido USD", value=float(p['swift']), step=0.01, format="%.2f", key=f"sw_{st.session_state.current_op}_{pk}")
@@ -310,7 +306,6 @@ for pk, p in parts.items():
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Calculation logic & base selector
 base_opt = st.selectbox("Base del resultado financiero:", ["Neto liquidado (como el PDF de ejemplo)", "Importe Swift instruido (como la app anterior)"], index=0 if curr_data['base']=='neto' else 1)
 curr_data['base'] = 'neto' if 'Neto' in base_opt else 'swift'
 
@@ -336,7 +331,6 @@ tot_rf = sum(r['rf'] for r in results)
 tot_acr = sum(r['acr'] for r in results)
 tot_d = sum(r['d'] for r in results)
 
-# KPIs
 st.markdown("<br>", unsafe_allow_html=True)
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 pct_cobrado = (tot_swift / f['usd'] * 100) if f['usd'] > 0 else 0
