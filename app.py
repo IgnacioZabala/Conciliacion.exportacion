@@ -53,18 +53,22 @@ def procesar_pdf(archivo):
     texto_completo = ""
     with pdfplumber.open(archivo) as pdf:
         for pagina in pdf.pages:
-            texto_completo += pagina.extract_text() + "\n"
+            t = pagina.extract_text()
+            if t:
+                texto_completo += t + "\n"
     
+    texto_upper = texto_completo.upper()
     texto_limpio = texto_completo.replace(',', '.')
-    datos = {"tipo": "Desconocido"}
+    datos = {"tipo": "Desconocido", "tiene_texto": bool(texto_completo.strip())}
     
-    if "FACTURA DE EXPORTACIÓN" in texto_completo.upper():
+    # 1. FACTURA DE EXPORTACIÓN
+    if any(k in texto_upper for k in ["FACTURA DE EXPORTACIÓN", "FACTURA DE EXPORTACION", "FACTURA E"]):
         datos["tipo"] = "Factura"
-        nro_match = re.search(r'Compr\. Nro:\s*([\d\-]+)', texto_completo)
-        fecha_match = re.search(r'Fecha de Emisión:\s*([\d\/]+)', texto_completo)
-        cliente_match = re.search(r'Señor\(es\):\s*(.+)', texto_completo)
-        tc_match = re.search(r'Tipo de Cambio:\s*([\d\.]+)', texto_limpio)
-        total_match = re.search(r'Importe Total:\s*USD\s*([\d\.]+)', texto_limpio)
+        nro_match = re.search(r'Compr\.?\s*Nro:?\s*([\d\-]+)', texto_completo, re.IGNORECASE)
+        fecha_match = re.search(r'Fecha de Emisión:?\s*([\d\/]+)', texto_completo, re.IGNORECASE)
+        cliente_match = re.search(r'Señor\(es\):?\s*(.+)', texto_completo, re.IGNORECASE)
+        tc_match = re.search(r'Tipo de Cambio:?\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
+        total_match = re.search(r'Importe Total:?\s*(?:USD)?\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
         
         if nro_match: datos["nro_factura"] = nro_match.group(1).strip()
         if fecha_match: datos["fecha"] = fecha_match.group(1).strip()
@@ -72,12 +76,13 @@ def procesar_pdf(archivo):
         if tc_match: datos["tc_factura"] = float(tc_match.group(1))
         if total_match: datos["total_usd"] = float(total_match.group(1))
 
-    elif "ID SWIFT" in texto_completo.upper():
+    # 2. SWIFT (Aviso / Mensaje Swift)
+    elif any(k in texto_upper for k in ["ID SWIFT", "SWIFT", "MT103", "MONTO OPERACIÓN", "MONTO OPERACION"]) and "FACTURA" not in texto_upper:
         datos["tipo"] = "Swift"
-        operacion_match = re.search(r'Monto operación\s*:\s*([\d\.]+)', texto_limpio)
-        gastos_match = re.search(r'Gastos de transacci.n.*?:\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
+        operacion_match = re.search(r'Monto\s*operaci.n\s*:\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
+        gastos_match = re.search(r'Gastos\s*de\s*transacci.n.*?:\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
         
-        if "ANTICIPO" in texto_completo.upper():
+        if "ANTICIPO" in texto_upper:
             datos["etiqueta"] = "Anticipo"
         else:
             datos["etiqueta"] = "Restante"
@@ -85,9 +90,10 @@ def procesar_pdf(archivo):
         if operacion_match: datos["usd_swift"] = float(operacion_match.group(1))
         if gastos_match: datos["gastos_swift"] = float(gastos_match.group(1))
 
-    elif "AVISO DE CREDITO" in texto_completo.upper():
+    # 3. LIQUIDACIÓN / AVISO DE CRÉDITO / CIERRE TC
+    elif any(k in texto_upper for k in ["AVISO DE CREDITO", "AVISO DE CRÉDITO", "HEMOS LIQUIDADO", "LIQUIDACION", "LIQUIDACIÓN", "CIERRE TC", "B01-COBROS", "ORDEN DE PAGO"]):
         datos["tipo"] = "Liquidacion"
-        liq_match = re.search(r'B01-COBROS DE EXPORTACIONES DE BIENES.*?USD\s*([\d\.]+)\s*([\d\.]+)', texto_limpio, re.DOTALL)
+        liq_match = re.search(r'(?:B01-COBROS DE EXPORTACIONES DE BIENES|COBROS DE EXPORTACIONES).*?USD\s*([\d\.]+)\s*([\d\.]+)', texto_limpio, re.DOTALL | re.IGNORECASE)
         
         if liq_match:
             datos["usd_liquidado"] = float(liq_match.group(1))
@@ -96,6 +102,12 @@ def procesar_pdf(archivo):
             datos["usd_comision"] = extraer_monto_usd(texto_limpio, "COMISION", tc_banco)
             datos["usd_rg2408"] = extraer_monto_usd(texto_limpio, "RG2408", tc_banco)
             datos["usd_iva"] = extraer_monto_usd(texto_limpio, "IVA 21%", tc_banco)
+        else:
+            # Búsqueda alternativa si cambia la disposición de columnas
+            usd_match = re.search(r'USD\s*([\d\.]+)', texto_limpio)
+            tc_banco_match = re.search(r'(?:TIPO CAMBIO|TC|CAMBIO)\s*:?\s*([\d\.]+)', texto_limpio, re.IGNORECASE)
+            if usd_match: datos["usd_liquidado"] = float(usd_match.group(1))
+            if tc_banco_match: datos["tc_banco"] = float(tc_banco_match.group(1))
             
     return datos
 
@@ -281,7 +293,6 @@ if st.session_state['orden_actual']:
             if not url_input:
                 st.warning("Por favor, ingresa el enlace o ID de la carpeta.")
             else:
-                # Normalizamos la URL si el usuario solo ingresó el ID
                 url_drive = url_input.strip()
                 if not url_drive.startswith("http"):
                     url_drive = f"https://drive.google.com/drive/folders/{url_drive}"
@@ -289,10 +300,11 @@ if st.session_state['orden_actual']:
                 with st.spinner('Descargando y procesando archivos de Google Drive...'):
                     try:
                         with tempfile.TemporaryDirectory() as tmpdir:
-                            # Se eliminó el parámetro incompatible 'remaining_ok'
                             gdown.download_folder(url=url_drive, output=tmpdir, quiet=True)
                             
+                            resumen_procesamiento = []
                             archivos_encontrados = 0
+                            
                             for root, _, files in os.walk(tmpdir):
                                 for file in files:
                                     if file.lower().endswith('.pdf'):
@@ -300,25 +312,34 @@ if st.session_state['orden_actual']:
                                         with open(filepath, 'rb') as f:
                                             datos = procesar_pdf(f)
                                             
-                                            if datos["tipo"] == "Factura":
+                                            if not datos.get("tiene_texto"):
+                                                resumen_procesamiento.append(f"⚠️ `{file}` parece ser una imagen o escaneo sin texto digital.")
+                                            elif datos["tipo"] == "Factura":
                                                 exp_data["factura"] = datos
+                                                resumen_procesamiento.append(f"✅ Factura leída de `{file}`")
                                             elif datos["tipo"] == "Swift":
                                                 if "swifts" not in exp_data: exp_data["swifts"] = []
                                                 exp_data["swifts"] = [s for s in exp_data["swifts"] if s.get("usd_swift") != datos.get("usd_swift")]
                                                 exp_data["swifts"].append(datos)
+                                                resumen_procesamiento.append(f"✅ Swift ({datos.get('etiqueta')}) leído de `{file}`")
                                             elif datos["tipo"] == "Liquidacion":
                                                 if "liquidaciones" not in exp_data: exp_data["liquidaciones"] = []
                                                 exp_data["liquidaciones"] = [l for l in exp_data["liquidaciones"] if l.get("usd_liquidado") != datos.get("usd_liquidado")]
                                                 exp_data["liquidaciones"].append(datos)
+                                                resumen_procesamiento.append(f"✅ Liquidación/Cierre TC leído de `{file}`")
+                                            else:
+                                                resumen_procesamiento.append(f"❓ `{file}` no pudo ser clasificado (revisa palabras clave).")
                                             
                                             archivos_encontrados += 1
                             
                             if archivos_encontrados > 0:
                                 guardar_datos(st.session_state['exportaciones'])
-                                st.success(f"¡Sincronización completa! Se procesaron {archivos_encontrados} archivos PDF.")
+                                st.success(f"¡Procesamiento finalizado! Archivos analizados: {archivos_encontrados}")
+                                for msg in resumen_procesamiento:
+                                    st.write(msg)
                                 st.rerun()
                             else:
-                                st.error("No se encontraron archivos PDF. Verifica que la carpeta en Drive tenga el acceso configurado en 'Cualquier persona con el enlace'.")
+                                st.error("No se encontraron archivos PDF. Verifica que la carpeta en Drive esté compartida como 'Cualquier persona con el enlace'.")
                     except Exception as e:
                         st.error(f"Error al acceder a la carpeta: {e}")
 
