@@ -347,7 +347,7 @@ if st.session_state['orden_actual']:
 
         st.divider()
 
-        # --- SECCIÓN DE CARGA / EDICIÓN MANUAL (PARA ESCANEOS O MANUSCRITOS) ---
+        # --- SECCIÓN DE CARGA / EDICIÓN MANUAL ---
         with st.expander("✍️ Cargar o Editar Swift / Liquidación Manualmente (Para Escaneos o Fotos)"):
             st.info("Utiliza esta opción cuando los archivos de Drive sean escaneos físicos o tengan anotaciones manuscritas.")
             
@@ -442,7 +442,8 @@ if st.session_state['orden_actual']:
 
                     st.markdown(f"**Total operación:** ${formato_arg(swift_ars)} ARS (USD ${formato_arg(usd_swift)})")
                     st.markdown(f"**1- Comisión:** ${formato_arg(comision_ars)} ARS")
-                    st.markdown(f"**2- Gastos de Transacción:** ${formato_arg(total_gastos_bancarios)} ARS  \n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*(Comisión: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} | IVA: ${formato_arg(iva_ars)})*")
+                    st.markdown(f"**2- Gastos de Transacción:** ${formato_arg(total_gastos_bancarios)} ARS")
+                    st.caption(f"*(Comisión: ${formato_arg(comision_ars)} | RG2408: ${formato_arg(rg2408_ars)} | IVA: ${formato_arg(iva_ars)})*")
                     st.markdown(f"**3- Resultado financiero:** {txt_res}")
                 else:
                     st.markdown(f"**Total operación:** USD ${formato_arg(usd_swift)}")
