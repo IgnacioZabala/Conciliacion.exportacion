@@ -3,3 +3,5 @@ pandas>=2.0.0
 numpy>=1.24.0
 pypdf>=3.17.0
 reportlab>=4.0.0
+pytesseract>=0.3.10
+pdf2image>=1.16.3
