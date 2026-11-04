@@ -74,8 +74,24 @@ if "current_id" not in st.session_state:
     st.session_state.current_id = st.session_state.export_operations[0]["id"]
 
 # ---------------------------------------------------------
-# PARSERS DE TEXTO Y ARCHIVOS (HÍBRIDO CON FALLBACK)
+# FORMATO DE MONEDAS (FORMATO ARGENTINO)
 # ---------------------------------------------------------
+def fmt_ars(val):
+    sign = "-" if val < 0 else ""
+    val_abs = abs(val)
+    formatted = f"{val_abs:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{sign}${formatted} ARS"
+
+def fmt_usd(val):
+    formatted = f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"${formatted}"
+
+def fmt_num_ars_only(val):
+    sign = "-" if val < 0 else ""
+    val_abs = abs(val)
+    formatted = f"{val_abs:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{sign}${formatted}"
+
 def parse_num(val_str):
     if not val_str:
         return 0.0
@@ -96,7 +112,6 @@ def parse_num(val_str):
         return 0.0
 
 def extract_pdf_text(file):
-    """Extrae texto usando pdfplumber o pypdf de forma segura."""
     text = ""
     try:
         file.seek(0)
@@ -168,7 +183,6 @@ def extract_swift(file):
         if 0 <= v_g <= 1000:
             res['gasto_swift'] = v_g
 
-    # Fallback inteligente si el PDF es escaneado (imagen sin capa de texto)
     filename = getattr(file, 'name', str(file)).lower()
     if 'swift_usd' not in res or res['swift_usd'] == 0:
         if "20%" in filename or "anticipo" in filename:
@@ -241,7 +255,6 @@ def extract_aviso(file):
         if val_tot > 100000:
             res['acreditado'] = val_tot
 
-    # Fallback inteligente si el PDF es escaneado (imagen sin capa de texto)
     filename = getattr(file, 'name', str(file)).lower()
     if 'tc_liq' not in res or res['tc_liq'] == 0:
         if "20%" in filename or "anticipo" in filename:
@@ -364,27 +377,105 @@ def clear_current_operation():
         st.toast("Datos y archivos limpiados correctamente", icon="🧹")
 
 # ---------------------------------------------------------
-# GENERADOR DE REPORTES PDF (COMPATIBLE CON TODAS LAS LIBRERÍAS FPDF)
+# GENERADOR DE REPORTES PDF (DISEÑO EXACTO AL MODELO)
 # ---------------------------------------------------------
 def generate_pdf_report(op):
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, f"Conciliacion de Exportacion - Factura {op.get('factura_nro', 'S/N')}", ln=True)
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 8, f"Cliente: {op.get('client', 'N/A')}", ln=True)
-    pdf.cell(0, 8, f"Fecha: {op.get('fecha', 'N/A')} | Importe: USD {op.get('importe_usd', 0):,.2f} | T.C. Factura: ${op.get('tc_factura', 0):,.2f}", ln=True)
-    pdf.ln(5)
+    pdf.set_auto_page_break(auto=True, margin=15)
 
-    for parte_name, key in [("ANTICIPIOS", "anticipo"), ("RESTANTE / SALDO", "restante")]:
+    tc_fac = op.get('tc_factura', 0.0)
+    imp_usd = op.get('importe_usd', 0.0)
+
+    # 1. Encabezado / Datos de la Factura
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 7, "Datos de la Factura", ln=True)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 6, f"Conciliacion de Exportacion: {op.get('factura_nro', 'S/N')}", ln=True)
+    
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 5, f"Fecha: {op.get('fecha', '')} | Nro: {op.get('factura_nro', '')}", ln=True)
+    pdf.cell(0, 5, f"Cliente: {op.get('client', '')}", ln=True)
+    tc_bna_str = f"{tc_fac:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    pdf.cell(0, 5, f"Monto: USD {fmt_usd(imp_usd)} | Tipo de Cambio (BNA): {tc_bna_str}", ln=True)
+    pdf.ln(3)
+
+    # 2. Desglose de Anticipo y Restante
+    for title, key in [("Anticipo:", "anticipo"), ("Restante:", "restante")]:
         p = op[key]
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 8, parte_name, ln=True)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 6, title, ln=True)
+        
         pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 6, f"  Swift: USD {p['swift_usd']:,.2f} | Gasto Swift: USD {p['gasto_swift']:,.2f}", ln=True)
-        pdf.cell(0, 6, f"  T.C. Liquidacion: ${p['tc_liq']:,.2f} | Acreditado: ${p['acreditado']:,.2f}", ln=True)
-        pdf.cell(0, 6, f"  Comision: ${p['comision']:,.2f} | RG 2408: ${p['rg']:,.2f} | IVA: ${p['iva']:,.2f}", ln=True)
+        sw_usd = p.get("swift_usd", 0.0)
+        tc_liq = p.get("tc_liq", 0.0)
+        tot_op_ars = sw_usd * tc_liq
+        
+        pdf.cell(0, 5, f"Total operacion: {fmt_ars(tot_op_ars)} (USD {fmt_usd(sw_usd)})", ln=True)
+        
+        com = p.get("comision", 0.0)
+        rg = p.get("rg", 0.0)
+        iva = p.get("iva", 0.0)
+        tot_gastos = com + rg + iva
+        res_fin = sw_usd * (tc_liq - tc_fac) if (tc_fac > 0 and tc_liq > 0) else 0.0
+        
+        pdf.cell(0, 5, f"1- Comision: {fmt_ars(com)}", ln=True)
+        pdf.cell(0, 5, f"2- Gastos de Transaccion: {fmt_ars(tot_gastos)}", ln=True)
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.cell(0, 5, f"(Comision: {fmt_num_ars_only(com)} | RG2408: {fmt_num_ars_only(rg)} | IVA: {fmt_num_ars_only(iva)})", ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 5, f"3- Resultado financiero: {fmt_ars(res_fin)}", ln=True)
         pdf.ln(3)
+
+    # 3. Validación de Cobro Total
+    ant = op["anticipo"]
+    res = op["restante"]
+    ant_tot = ant.get("swift_usd", 0.0) + ant.get("gasto_swift", 0.0)
+    res_tot = res.get("swift_usd", 0.0) + res.get("gasto_swift", 0.0)
+    tot_pagado = ant_tot + res_tot
+
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 6, "Validacion de Cobro Total:", ln=True)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 5, f"- Anticipo: USD {fmt_usd(ant.get('swift_usd', 0.0))} (Neto) + USD {fmt_usd(ant.get('gasto_swift', 0.0))} (Swift) = USD {fmt_usd(ant_tot)}", ln=True)
+    pdf.cell(0, 5, f"Restante: USD {fmt_usd(res.get('swift_usd', 0.0))} (Neto) + USD {fmt_usd(res.get('gasto_swift', 0.0))} (Swift) = USD {fmt_usd(res_tot)}", ln=True)
+    pdf.cell(0, 5, f"Total Pagado por Cliente: USD {fmt_usd(tot_pagado)}", ln=True)
+    pdf.cell(0, 5, f"Total Facturado: USD {fmt_usd(imp_usd)}", ln=True)
+
+    if abs(tot_pagado - imp_usd) < 0.05 and imp_usd > 0:
+        estado_str = "ESTADO: 100% COBRADO (Los montos coinciden exactamente)"
+    else:
+        pct = (tot_pagado / imp_usd * 100) if imp_usd > 0 else 0.0
+        estado_str = f"ESTADO: {pct:.1f}% COBRADO (Saldo pendiente: USD {fmt_usd(max(0.0, imp_usd - tot_pagado))})"
+        
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 6, estado_str, ln=True)
+    pdf.ln(6)
+
+    # 4. Sello / Recuadros de Contabilización
+    y_pos = pdf.get_y()
+    
+    # Recuadro 1 (Anticipo)
+    pdf.rect(15, y_pos, 75, 20)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_xy(17, y_pos + 2)
+    pdf.cell(70, 5, "CONTABILIZADO", ln=True)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_xy(17, y_pos + 8)
+    pdf.cell(70, 5, "Fecha: ......../......../........", ln=True)
+    pdf.set_xy(17, y_pos + 13)
+    pdf.cell(70, 5, "Asiento:", ln=True)
+
+    # Recuadro 2 (Restante / Cobro)
+    pdf.rect(105, y_pos, 75, 20)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_xy(107, y_pos + 2)
+    pdf.cell(70, 5, "CONTABILIZADO", ln=True)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_xy(107, y_pos + 8)
+    pdf.cell(70, 5, "Fecha: ......../......../........", ln=True)
+    pdf.set_xy(107, y_pos + 13)
+    pdf.cell(70, 5, "Asiento:", ln=True)
 
     out = pdf.output(dest='S')
     if isinstance(out, str):
