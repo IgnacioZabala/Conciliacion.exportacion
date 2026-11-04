@@ -385,8 +385,9 @@ def generate_pdf_report(op):
     tc_fac = op.get('tc_factura', 0.0)
     imp_usd = op.get('importe_usd', 0.0)
     nombre_exportacion = op.get('nombre', 'Exportación')
+    cliente_nombre = op.get('client', 'Cliente')
 
-    # Título principal centrado con el nombre completo y tamaño grande (16)
+    # Título principal centrado con el nombre completo
     pdf.set_font("Helvetica", "B", 16)
     pdf.cell(0, 10, f"Conciliacion Exportacion {nombre_exportacion}", ln=True, align='C')
     pdf.ln(4)
@@ -395,7 +396,7 @@ def generate_pdf_report(op):
     pdf.cell(0, 8, "Datos de la Factura", ln=True)
     pdf.set_font("Helvetica", "", 10.5)
     pdf.cell(0, 6.5, f"Fecha: {op.get('fecha', '')} | Nro: {op.get('factura_nro', '')}", ln=True)
-    pdf.cell(0, 6.5, f"Cliente: {op.get('client', '')}", ln=True)
+    pdf.cell(0, 6.5, f"Cliente: {cliente_nombre}", ln=True)
     pdf.cell(0, 6.5, f"Monto: USD {fmt_usd(imp_usd)} | Tipo de Cambio (BNA): {tc_fac:,.2f}", ln=True)
     pdf.ln(4)
 
@@ -451,17 +452,24 @@ def generate_pdf_report(op):
     pdf.cell(0, 6.5, f"- Anticipo: USD {fmt_usd(ant.get('swift_usd', 0.0))} (Neto) + USD {fmt_usd(ant.get('gasto_swift', 0.0))} (Swift) = USD {fmt_usd(ant_tot)}", ln=True)
     
     tot_pagado = ant_tot
+    active_tc_liq = ant.get('tc_liq', 0.0)
     if ("Restante:", "restante") in sections:
         res = op["restante"]
         res_tot = res.get("swift_usd", 0.0) + res.get("gasto_swift", 0.0)
         tot_pagado += res_tot
+        active_tc_liq = res.get('tc_liq', active_tc_liq)
         pdf.cell(0, 6.5, f"- Restante: USD {fmt_usd(res.get('swift_usd', 0.0))} (Neto) + USD {fmt_usd(res.get('gasto_swift', 0.0))} (Swift) = USD {fmt_usd(res_tot)}", ln=True)
     
     pdf.cell(0, 6.5, f"Total Pagado por Cliente: USD {fmt_usd(tot_pagado)}", ln=True)
     pdf.cell(0, 6.5, f"Total Facturado: USD {fmt_usd(imp_usd)}", ln=True)
     pdf.ln(2)
 
-    if abs(tot_pagado - imp_usd) < 0.05 and imp_usd > 0:
+    # Validar si hay saldo a favor (pagado > facturado)
+    if tot_pagado > imp_usd:
+        excedente_usd = tot_pagado - imp_usd
+        excedente_ars = excedente_usd * active_tc_liq
+        estado_str = f"ESTADO: Saldo a favor de {cliente_nombre}: {fmt_ars(excedente_ars)} (USD {fmt_usd(excedente_usd)})"
+    elif abs(tot_pagado - imp_usd) < 0.05 and imp_usd > 0:
         estado_str = "ESTADO: 100% COBRADO (Los montos coinciden exactamente)"
     else:
         pct = (tot_pagado / imp_usd * 100) if imp_usd > 0 else 0.0
@@ -561,7 +569,7 @@ is_closed = (pct_now >= 99.9)
 head_col1, head_col2, head_col3 = st.columns([3, 1, 1])
 with head_col1:
     display_title = current_op.get('nombre', f"{op_id}")
-    st.markdown(f"<h2 style='font-size: 24px; font-weight: 700; margin-bottom: 4px;'>{display_title} ({current_op['client'].split(' ')[0] or 'Cliente'}) {' <span class=\"status-badge-success\">CERRADA</span>' if is_closed else ' <span class=\"status-badge-warning\">EN PROCESO</span>'}</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h2 style='font-size: 24px; font-weight: 700; margin-bottom: 4px;'>{display_title} ({current_op['client'].split(' ')[0] or 'Cliente'}) {' <span class=\"status-badge-success\">CERRADA / SALDO A FAVOR</span>' if pct_now >= 100 else ' <span class=\"status-badge-warning\">EN PROCESO</span>'}</h2>", unsafe_allow_html=True)
     st.caption(f"Guardado automático · {current_op['client'] or 'Sin Cliente Seleccionado'}")
 
 with head_col2:
@@ -652,11 +660,12 @@ res_com_total = res["comision"] + res["rg"] + res["iva"]
 res_acobrar_ars = res_liq_ars - res_com_total
 res_res_fin = (res["tc_liq"] - current_op["tc_factura"]) * (res["swift_usd"] + res["gasto_swift"]) if (current_op["tc_factura"] > 0 and res["tc_liq"] > 0) else 0.0
 
-tot_swift_usd = ant["swift_usd"] + res["swift_usd"]
+tot_swift_usd = (ant["swift_usd"] + ant["gasto_swift"]) + (res["swift_usd"] + res["gasto_swift"]) # Total pagado neto + swift
+tot_swift_neto = ant["swift_usd"] + res["swift_usd"]
 tot_com_total = ant_com_total + res_com_total
 tot_res_fin = ant_res_fin + res_res_fin
 tot_acobrar_ars = ant_acobrar_ars + res_acobrar_ars
-pct_cobrado = (tot_swift_usd / current_op["importe_usd"] * 100) if current_op["importe_usd"] > 0 else 0.0
+pct_cobrado = (tot_swift_neto / current_op["importe_usd"] * 100) if current_op["importe_usd"] > 0 else 0.0
 
 tot_factura_ars = current_op["importe_usd"] * current_op["tc_factura"]
 tot_liq_ars = ant_liq_ars + res_liq_ars
@@ -672,7 +681,7 @@ m2.markdown("<div class='kpi-title'>Total Facturado</div>", unsafe_allow_html=Tr
 m2.markdown(f"<div class='kpi-value'>{fmt_usd(current_op['importe_usd'])}</div>", unsafe_allow_html=True)
 
 m3.markdown("<div class='kpi-title'>Total Swift</div>", unsafe_allow_html=True)
-m3.markdown(f"<div class='kpi-value'>{fmt_usd(tot_swift_usd)}</div>", unsafe_allow_html=True)
+m3.markdown(f"<div class='kpi-value'>{fmt_usd(tot_swift_neto)}</div>", unsafe_allow_html=True)
 
 m4.markdown("<div class='kpi-title'>Comisiones+IVA+Perc.</div>", unsafe_allow_html=True)
 m4.markdown(f"<div class='kpi-value'>{fmt_ars(tot_com_total)}</div>", unsafe_allow_html=True)
@@ -686,8 +695,8 @@ m6.markdown(f"<div class='kpi-value'>{fmt_ars(tot_acobrar_ars)}</div>", unsafe_a
 m7.markdown("<div class='kpi-title'>Saldo en Cta.Cte</div>", unsafe_allow_html=True)
 m7.markdown(f"<div class='kpi-value'>{fmt_ars(saldo_cta_cte)}</div>", unsafe_allow_html=True)
 
-if is_closed:
-    st.markdown("<br><div class='status-badge-success'>Operación cerrada — se cobró el 100% de la factura.</div>", unsafe_allow_html=True)
+if pct_now >= 100:
+    st.markdown("<br><div class='status-badge-success'>Operación con 100%+ cobrado (Saldo a favor del cliente).</div>", unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
@@ -731,7 +740,7 @@ df_detalle = pd.DataFrame([
         "N°": "TOTAL",
         "Fecha": "-",
         "%": f"{pct_cobrado:.2f}%",
-        "Importe Cobrado (Swift)": fmt_usd(tot_swift_usd),
+        "Importe Cobrado (Swift)": fmt_usd(tot_swift_neto),
         "Gastos Swift": fmt_usd(ant["gasto_swift"] + res["gasto_swift"]),
         "Importe Liquidado (USD)": fmt_usd((ant["swift_usd"] - ant["gasto_swift"]) + (res["swift_usd"] - res["gasto_swift"])),
         "TC Liq.": "-",
