@@ -384,16 +384,11 @@ def generate_pdf_report(op):
 
     tc_fac = op.get('tc_factura', 0.0)
     imp_usd = op.get('importe_usd', 0.0)
-
-    # Título Principal Centrado con el Nombre de la Exportación
     nombre_exportacion = op.get('nombre', 'Exportación')
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, nombre_exportacion, ln=True, align='C')
-    pdf.ln(1)
 
-    # Subtítulo con Conciliación de Exportación y el nombre cargado a mano
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 7, f"Conciliacion Exportacion {nombre_exportacion}", ln=True, align='C')
+    # Título principal centrado con el nombre completo y tamaño grande (16)
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, f"Conciliacion Exportacion {nombre_exportacion}", ln=True, align='C')
     pdf.ln(4)
 
     pdf.set_font("Helvetica", "B", 13)
