@@ -365,7 +365,6 @@ def clear_current_operation():
             st.session_state[f"iva_{key_name}_{oid}"] = 0.0
             st.session_state[f"ac_{key_name}_{oid}"] = 0.0
             
-            # ELIMINAR LOS ARCHIVOS PDF CARGADOS EN LOS UPLOADERS
             for up_type in ["fac", "swift", "aviso"]:
                 up_key = f"uploader_{up_type}_{key_name}_{oid}"
                 if up_key in st.session_state:
@@ -375,7 +374,7 @@ def clear_current_operation():
         st.toast("Datos y archivos limpiados correctamente", icon="🧹")
 
 # ---------------------------------------------------------
-# GENERADOR DE REPORTES PDF
+# GENERADOR DE REPORTES PDF (CON TÍTULO CENTRADO)
 # ---------------------------------------------------------
 def generate_pdf_report(op):
     pdf = FPDF()
@@ -384,11 +383,17 @@ def generate_pdf_report(op):
 
     tc_fac = op.get('tc_factura', 0.0)
     imp_usd = op.get('importe_usd', 0.0)
+    nombre_exp = op.get('nombre', 'Exportación')
 
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 8, "Datos de la Factura", ln=True)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 7, f"Conciliacion de Exportacion: {op.get('factura_nro', 'S/N')}", ln=True)
+    # Título centrado con el nombre de la exportación
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, nombre_exp, ln=True, align='C')
+    pdf.ln(3)
+
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 7, "Datos de la Factura", ln=True)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 6, f"Conciliacion de Exportacion: {op.get('factura_nro', 'S/N')}", ln=True)
     pdf.ln(2)
 
     pdf.set_font("Helvetica", "", 10.5)
