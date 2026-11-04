@@ -1,8 +1,11 @@
 import streamlit as st
 import pdfplumber
+from pypdf import PdfReader
 import json
 import re
 import os
+from io import BytesIO
+from PIL import Image
 from fpdf import FPDF
 
 # ---------------------------------------------------------
@@ -74,7 +77,7 @@ if "current_id" not in st.session_state:
     st.session_state.current_id = st.session_state.export_operations[0]["id"]
 
 # ---------------------------------------------------------
-# PARSERS DE TEXTO Y NÚMEROS (CON RE-SEEK DE ARCHIVO)
+# MOTOR HÍBRIDO DE EXTRACCIÓN DE TEXTO (TEXTO NATIVO + OCR)
 # ---------------------------------------------------------
 def parse_num(val_str):
     if not val_str:
@@ -95,133 +98,195 @@ def parse_num(val_str):
     except ValueError:
         return 0.0
 
-def extract_factura_e(file):
+def extract_text_from_pdf(file):
+    """Extrae texto de PDFs nativos o ejecuta OCR si el PDF es una imagen escaneada."""
     file.seek(0)
-    res = {}
-    with pdfplumber.open(file) as pdf:
-        text = " ".join([page.extract_text() or "" for page in pdf.pages])
-        clean = re.sub(r'\s+', ' ', text)
+    text = ""
+    
+    # 1. Intentar extracción directa con pdfplumber / pypdf
+    try:
+        with pdfplumber.open(file) as pdf:
+            text = " ".join([page.extract_text() or "" for page in pdf.pages])
+    except Exception:
+        pass
+
+    if len(text.strip()) < 15:
+        file.seek(0)
+        try:
+            reader = PdfReader(file)
+            text = " ".join([page.extract_text() or "" for page in reader.pages])
+        except Exception:
+            pass
+
+    # 2. Si el PDF es un escaneo (imagen), aplicar OCR
+    if len(text.strip()) < 15:
+        file.seek(0)
+        ocr_text = ""
         
-        nro_match = re.search(r'Compr\.?\s*Nro[:\s]*([0-9]{4,5})\s*-\s*([0-9]{8})', clean, re.I) or re.search(r'([0-9]{4,5}-[0-9]{8})', clean)
-        if nro_match:
-            res['factura_nro'] = f"{nro_match.group(1)}-{nro_match.group(2)}" if len(nro_match.groups()) > 1 else nro_match.group(1)
+        # Intento con Tesseract OCR
+        try:
+            import pytesseract
+            reader = PdfReader(file)
+            for page in reader.pages:
+                for img_obj in page.images:
+                    img = Image.open(BytesIO(img_obj.data))
+                    ocr_text += pytesseract.image_to_string(img, lang='spa+eng') + " "
+        except Exception:
+            pass
             
-        fecha_match = re.search(r'([0-9]{2}/[0-9]{2}/[0-9]{4})', clean)
-        if fecha_match:
-            res['fecha'] = fecha_match.group(1)
+        # Fallback con EasyOCR si Tesseract no está instalado
+        if len(ocr_text.strip()) < 15:
+            try:
+                import easyocr
+                import numpy as np
+                reader_ocr = easyocr.Reader(['es', 'en'], gpu=False)
+                file.seek(0)
+                pypdf_reader = PdfReader(file)
+                for page in pypdf_reader.pages:
+                    for img_obj in page.images:
+                        img = Image.open(BytesIO(img_obj.data)).convert('RGB')
+                        res = reader_ocr.readtext(np.array(img), detail=0)
+                        ocr_text += " ".join(res) + " "
+            except Exception:
+                pass
 
-        cliente_match = re.search(r'Se[ñn]or[^\:]*:\s*(.*?)(?=\s+(?:CUIT|ID\s+Impositivo|Domicilio|Divisa|Destino|Condici[oó]n))', clean, re.I)
-        if cliente_match:
-            res['client'] = cliente_match.group(1).strip()
+        if len(ocr_text.strip()) >= 15:
+            text = ocr_text
 
-        total_match = re.search(r'(?:Importe\s+Total|Total\s+por\s+item)[^0-9]*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})', clean, re.I)
-        if total_match:
-            res['importe_usd'] = parse_num(total_match.group(1))
+    return text
 
-        tc_match = re.search(r'Tipo\s+de\s+Cambio[^0-9]*([0-9]+(?:[\.,][0-9]+)?)', clean, re.I)
-        if tc_match:
-            res['tc_factura'] = parse_num(tc_match.group(1))
+# ---------------------------------------------------------
+# PARSERS DE DOCUMENTOS ESPECÍFICOS
+# ---------------------------------------------------------
+def extract_factura_e(file):
+    text = extract_text_from_pdf(file)
+    clean = re.sub(r'\s+', ' ', text)
+    res = {}
+    
+    nro_match = re.search(r'Compr\.?\s*Nro[:\s]*([0-9]{4,5})\s*-\s*([0-9]{8})', clean, re.I) or re.search(r'([0-9]{4,5}-[0-9]{8})', clean)
+    if nro_match:
+        res['factura_nro'] = f"{nro_match.group(1)}-{nro_match.group(2)}" if len(nro_match.groups()) > 1 else nro_match.group(1)
+        
+    fecha_match = re.search(r'Fecha\s+de\s+Emisi[oó]n[:\s]*([0-9]{2}/[0-9]{2}/[0-9]{4})', clean, re.I) or re.search(r'([0-9]{2}/[0-9]{2}/[0-9]{4})', clean)
+    if fecha_match:
+        res['fecha'] = fecha_match.group(1)
 
-        kg_match = re.search(r'([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{6}|[0-9]+,[0-9]{6})', clean)
-        if kg_match:
-            res['kilos'] = parse_num(kg_match.group(1))
-            
+    cliente_match = re.search(r'Se[ñn]or\(es\)[:\s]*(.*?)(?=\s+(?:CUIT|ID\s+Impositivo|Domicilio|Divisa|Destino|Condici[oó]n))', clean, re.I)
+    if cliente_match:
+        res['client'] = cliente_match.group(1).strip()
+
+    total_match = re.search(r'Importe\s+Total[:\s]*USD[:\s]*([0-9\.,]+)', clean, re.I) or re.search(r'(?:Importe\s+Total|Total\s+por\s+[ií]tem)[^0-9]*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})', clean, re.I)
+    if total_match:
+        res['importe_usd'] = parse_num(total_match.group(1))
+
+    tc_match = re.search(r'Tipo\s+de\s+Cambio[:\s]*([0-9]+(?:[\.,][0-9]+)?)', clean, re.I)
+    if tc_match:
+        res['tc_factura'] = parse_num(tc_match.group(1))
+
+    kg_match = re.search(r'([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2,6}|[0-9]+,[0-9]{2,6})\s*(?:kg|KGS)', clean, re.I) or re.search(r'([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{6}|[0-9]+,[0-9]{6})', clean)
+    if kg_match:
+        res['kilos'] = parse_num(kg_match.group(1))
+        
     return res
 
 def extract_swift(file):
-    file.seek(0)
+    text = extract_text_from_pdf(file)
+    clean = re.sub(r'\s+', ' ', text)
     res = {}
-    with pdfplumber.open(file) as pdf:
-        text = " ".join([page.extract_text() or "" for page in pdf.pages])
-        clean = re.sub(r'\s+', ' ', text)
-        
-        m_swift = re.search(r'([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:[\.,][0-9]{1,2})?)\s+Cobro', clean, re.I) or \
-                  re.search(r'(?:USD|Monto|Importe|32B:[A-Z]{3}|32A:[0-9]{6}[A-Z]{3})\s*:?\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:[\.,][0-9]{1,2})?)', clean, re.I) or \
-                  re.search(r'([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8},[0-9]{2})', clean)
-        if m_swift:
-            v_sw = parse_num(m_swift.group(1))
-            if v_sw > 100:
-                res['swift_usd'] = v_sw
+    
+    # Importe SWIFT USD (e.g., 22465.00 Cobro Anticipado / 90185 Cobro definitivo)
+    m_swift = re.search(r'([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:[\.,][0-9]{1,2})?)\s+(?:Cobro|Cobro\s+Anticipado|Cobro\s+definitivo)', clean, re.I) or \
+              re.search(r'(?:Monto|Importe|32B:[A-Z]{3}|32A:[0-9]{6}[A-Z]{3})\s*:?\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:[\.,][0-9]{1,2})?)', clean, re.I) or \
+              re.search(r'\b([0-9]{4,6}(?:\.[0-9]{2})?)\b\s+Cobro', clean, re.I)
+    if m_swift:
+        v_sw = parse_num(m_swift.group(1))
+        if v_sw > 100:
+            res['swift_usd'] = v_sw
 
-        m_gasto = re.search(r'(?:Gastos|Gasto|71F:[A-Z]{3})[^\d]*([0-9]{1,4}(?:[\.,][0-9]{1,2})?)', clean, re.I)
-        if m_gasto:
-            v_g = parse_num(m_gasto.group(1))
-            if 0 <= v_g <= 1000:
-                res['gasto_swift'] = v_g
+    # Gastos de transferencia
+    m_gasto = re.search(r'(?:Gastos\s+de\s+transacci[oó]n[^\d]*|Gasto\s+swift[^\d]*|71F:[A-Z]{3})([0-9]{1,4}(?:[\.,][0-9]{1,2})?)', clean, re.I)
+    if m_gasto:
+        v_g = parse_num(m_gasto.group(1))
+        if 0 <= v_g <= 1000:
+            res['gasto_swift'] = v_g
+            
     return res
 
 def extract_aviso(file):
-    file.seek(0)
+    text = extract_text_from_pdf(file)
+    clean = re.sub(r'\s+', ' ', text)
     res = {}
-    with pdfplumber.open(file) as pdf:
-        text = " ".join([page.extract_text() or "" for page in pdf.pages])
-        clean = re.sub(r'\s+', ' ', text)
-        
-        # Fecha
-        f_match = re.search(r'FECHA:?\s*([0-9]{2}/[0-9]{2}/[0-9]{4})', clean, re.I) or \
-                  re.search(r'Fecha\s+reporte:?\s*([0-9]{2}/[0-9]{2}/[0-9]{2,4})', clean, re.I) or \
-                  re.search(r'([0-9]{2}/[0-9]{2}/[0-9]{4})', clean)
-        if f_match:
-            res['fecha'] = f_match.group(1)
+    
+    # Fecha Acreditación
+    f_match = re.search(r'FECHA:?\s*([0-9]{2}/[0-9]{2}/[0-9]{4})', clean, re.I) or \
+              re.search(r'Fecha\s+reporte:?\s*([0-9]{2}/[0-9]{2}/[0-9]{2,4})', clean, re.I) or \
+              re.search(r'([0-9]{2}/[0-9]{2}/[0-9]{4})', clean)
+    if f_match:
+        res['fecha'] = f_match.group(1)
 
-        # Monto USD del aviso Santander (ej: "20% USD 22.465" o "80% USD 90.185")
-        m_usd = re.search(r'(?:20%|80%|100%|MONEDA)?\s*USD\s+([0-9]{1,3}(?:\.[0-9]{3})*|[0-9]{4,8})', clean, re.I) or \
-                re.search(r'USD\s+([0-9\.,]+)', clean, re.I)
-        if m_usd:
-            v_usd = parse_num(m_usd.group(1))
-            if v_usd > 100:
-                res['swift_usd'] = v_usd
+    # Monto USD (e.g. 20% USD 22.465 u 80% USD 90.185)
+    m_usd = re.search(r'(?:20%|80%|100%|MONEDA)?\s*USD\s+([0-9]{1,3}(?:\.[0-9]{3})*|[0-9]{4,8})', clean, re.I) or \
+            re.search(r'USD\s+([0-9\.,]+)', clean, re.I)
+    if m_usd:
+        v_usd = parse_num(m_usd.group(1))
+        if v_usd > 100:
+            res['swift_usd'] = v_usd
 
-        # T.C. Liquidación (Santander: busca valores en rango de cotización de 500 a 5000)
-        tc_candidates = []
+    # Tipo de Cambio Liquidación Santander
+    # Formato: SUBTOTAL POR TRANSF USD <TC> <Monto> <Equiv> -> USD 1352 22465 30372680 / USD 1490.5 90185 134420742.5
+    m_tc_santander = re.search(r'SUBTOTAL\s+POR\s+TRANSF\s+USD\s+([0-9]{3,4}(?:\.[0-9]{1,2})?)\s+([0-9]+)\s+([0-9\.]+)', clean, re.I)
+    if m_tc_santander:
+        res['tc_liq'] = parse_num(m_tc_santander.group(1))
+        if 'swift_usd' not in res or res['swift_usd'] == 0:
+            res['swift_usd'] = parse_num(m_tc_santander.group(2))
+    else:
+        # Búsqueda por candidatos en rango cotización
         tokens = clean.split(' ')
         for t in tokens:
             v = parse_num(t)
             if 500 <= v <= 5000:
-                tc_candidates.append(v)
-        if tc_candidates:
-            res['tc_liq'] = tc_candidates[0]
+                res['tc_liq'] = v
+                break
 
-        # COMISION (ARS)
-        m_com = re.search(r'COMISION[^\n]*', clean, re.I)
-        if m_com:
-            com_text = m_com.group(0)[:120]
-            nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:\.[0-9]{2})?)\b', com_text)
-            parsed_nums = [parse_num(x) for x in nums]
-            com_ars = [x for x in parsed_nums if x > 500 and x != res.get('tc_liq') and x != res.get('swift_usd')]
-            if com_ars:
-                res['comision'] = com_ars[-1]
+    # COMISION (ARS)
+    m_com = re.search(r'COMISION\s+USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I) or re.search(r'COMISI[OÓ]N[^\n]*', clean, re.I)
+    if m_com:
+        nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:\.[0-9]{2})?)\b', m_com.group(0))
+        parsed_nums = [parse_num(x) for x in nums]
+        com_ars = [x for x in parsed_nums if x > 500 and x != res.get('tc_liq') and x != res.get('swift_usd')]
+        if com_ars:
+            res['comision'] = com_ars[-1]
 
-        # RG 2408 (ARS)
-        m_rg = re.search(r'RG2408[^\n]*', clean, re.I) or re.search(r'RG\s*2408[^\n]*', clean, re.I)
-        if m_rg:
-            rg_text = m_rg.group(0)[:120]
-            nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,7}(?:\.[0-9]{2})?)\b', rg_text)
-            parsed_nums = [parse_num(x) for x in nums]
-            rg_ars = [x for x in parsed_nums if x > 10 and x != res.get('tc_liq') and x != res.get('swift_usd')]
-            if rg_ars:
-                res['rg'] = rg_ars[-1]
+    # RG 2408 (ARS)
+    m_rg = re.search(r'RG2408\s+USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I) or re.search(r'RG\s*2408[^\n]*', clean, re.I)
+    if m_rg:
+        nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,7}(?:\.[0-9]{2})?)\b', m_rg.group(0))
+        parsed_nums = [parse_num(x) for x in nums]
+        rg_ars = [x for x in parsed_nums if x > 10 and x != res.get('tc_liq') and x != res.get('swift_usd')]
+        if rg_ars:
+            res['rg'] = rg_ars[-1]
 
-        # IVA 21% (ARS)
-        m_iva = re.search(r'IVA\s+21%[^\n]*', clean, re.I)
-        if m_iva:
-            iva_text = m_iva.group(0)[:120]
-            nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:\.[0-9]{2})?)\b', iva_text)
-            parsed_nums = [parse_num(x) for x in nums]
-            iva_ars = [x for x in parsed_nums if x > 100 and x != res.get('tc_liq') and x != res.get('swift_usd')]
-            if iva_ars:
-                res['iva'] = iva_ars[-1]
+    # IVA 21% (ARS)
+    m_iva = re.search(r'IVA\s+21%[^\n]*USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I) or re.search(r'IVA\s+21%[^\n]*', clean, re.I)
+    if m_iva:
+        nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:\.[0-9]{2})?)\b', m_iva.group(0))
+        parsed_nums = [parse_num(x) for x in nums]
+        iva_ars = [x for x in parsed_nums if x > 100 and x != res.get('tc_liq') and x != res.get('swift_usd')]
+        if iva_ars:
+            res['iva'] = iva_ars[-1]
 
-        # TOTAL ACREDITADO (ARS)
-        m_tot = re.search(r'(?:total|acreditado|CLIE11405707098)[^\d]*([0-9]{7,11}(?:\.[0-9]{1,2})?|[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})', clean, re.I)
-        if m_tot:
-            val_tot = parse_num(m_tot.group(1))
-            if val_tot > 100000:
-                res['acreditado'] = val_tot
-        if 'acreditado' not in res:
-            all_large = [parse_num(x) for x in re.findall(r'\b([0-9]{7,11}(?:\.[0-9]{1,2})?)\b', clean)]
-            if all_large:
-                res['acreditado'] = max(all_large)
+    # TOTAL ACREDITADO (ARS)
+    m_tot = re.search(r'Importe\s+acreditado[^\d]*([0-9]{7,11}(?:\.[0-9]{1,2})?|[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})', clean, re.I) or \
+            re.search(r'total[^\d]*([0-9]{7,11}(?:\.[0-9]{1,2})?|[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})', clean, re.I)
+    if m_tot:
+        val_tot = parse_num(m_tot.group(1))
+        if val_tot > 100000:
+            res['acreditado'] = val_tot
+            
+    if 'acreditado' not in res:
+        all_large = [parse_num(x) for x in re.findall(r'\b([0-9]{7,11}(?:\.[0-9]{1,2})?)\b', clean)]
+        if all_large:
+            res['acreditado'] = max(all_large)
 
     return res
 
@@ -242,6 +307,7 @@ def process_pdf_factura(key_name, op_id):
             if "importe_usd" in data: st.session_state[f"main_imp_{op_id}"] = float(data["importe_usd"])
             if "tc_factura" in data: st.session_state[f"main_tc_{op_id}"] = float(data["tc_factura"])
             save_data()
+            st.toast("Factura E procesada con éxito", icon="📄")
 
 def process_pdf_swift(key_name, op_id):
     file = st.session_state.get(f"uploader_swift_{key_name}_{op_id}")
@@ -259,6 +325,7 @@ def process_pdf_swift(key_name, op_id):
                 sub["acreditado"] = acred_calc
                 st.session_state[f"ac_{key_name}_{op_id}"] = float(acred_calc)
             save_data()
+            st.toast(f"SWIFT {key_name.capitalize()} procesado", icon="🏦")
 
 def process_pdf_aviso(key_name, op_id):
     file = st.session_state.get(f"uploader_aviso_{key_name}_{op_id}")
@@ -283,6 +350,7 @@ def process_pdf_aviso(key_name, op_id):
                 sub["acreditado"] = acred_calc
                 st.session_state[f"ac_{key_name}_{op_id}"] = float(acred_calc)
             save_data()
+            st.toast(f"Aviso Crédito {key_name.capitalize()} procesado", icon="📊")
 
 # ---------------------------------------------------------
 # FUNCION PARA LIMPIAR DATOS
@@ -453,7 +521,7 @@ current_op["importe_usd"] = c5.number_input("Importe USD", format="%.2f", key=f"
 current_op["tc_factura"] = c6.number_input("T.C. Factura", format="%.2f", key=f"main_tc_{op_id}")
 st.markdown("</div>", unsafe_allow_html=True)
 
-# SECCIONES ANTICIPO Y RESTANTE (CON CALLBACKS PUROS)
+# SECCIONES ANTICIPO Y RESTANTE
 def render_section(title, key_name):
     st.markdown("<div class='g-card'>", unsafe_allow_html=True)
     sub_data = current_op[key_name]
