@@ -6,14 +6,45 @@ import os
 from fpdf import FPDF
 
 # ---------------------------------------------------------
-# CONFIGURACIÓN DE PÁGINA Y ESTILOS
+# CONFIGURACIÓN DE PÁGINA Y ESTILOS TIPO GOOGLE SITES
 # ---------------------------------------------------------
 st.set_page_config(page_title="Conciliación de Exportación", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
-    .main { background-color: #f8fafc; }
-    .stCard { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+    /* Estilo Global Google Sites / Material Modern */
+    .stApp {
+        background-color: #f8f9fa;
+        font-family: 'Google Sans', 'Inter', -apple-system, sans-serif;
+    }
+    
+    /* Panel Lateral Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #ffffff !important;
+        border-right: 1px solid #e0e3e7 !important;
+    }
+    
+    /* Botones estilo Google */
+    .stButton>button {
+        border-radius: 20px !important;
+        font-weight: 500 !important;
+        transition: all 0.2s ease !important;
+    }
+    
+    /* Tarjetas redondeadas Google Sites */
+    .g-card {
+        background: #ffffff;
+        border-radius: 16px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border: 1px solid #e3e8ef;
+        box-shadow: 0 1px 3px rgba(60,64,67,0.08);
+    }
+    
+    /* Estilizado de inputs */
+    div[data-baseweb="input"] {
+        border-radius: 10px !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -52,7 +83,7 @@ if "current_id" not in st.session_state:
     st.session_state.current_id = st.session_state.export_operations[0]["id"]
 
 # ---------------------------------------------------------
-# PARSERS DE NUMEROS Y PDF
+# PARSERS DE TEXTO Y NÚMEROS
 # ---------------------------------------------------------
 def parse_num(val_str):
     if not val_str:
@@ -140,14 +171,13 @@ def extract_aviso(file):
         if f_match:
             res['fecha'] = f_match.group(1)
 
-        # T.C. LIQUIDACIÓN (Alineado con formatos 1.371,00 o 1371,50)
+        # PARSING MEJORADO DE T.C. LIQUIDACIÓN
+        tc_found = False
         tc_patterns = [
-            r'(?:TIPO\s+DE?\s+CAMBIO|T\.C\.|CAMBIO|COTIZACI[OÓ]N)\s*[:\$=]?\s*\b([0-9]{1,4}(?:\.[0-9]{3})*(?:,[0-9]{1,4})?|[0-9]{3,4}(?:,[0-9]{1,4})?)\b',
-            r'\b([0-9]{1,3}\.[0-9]{3},[0-9]{2})\b',
-            r'\b([0-9]{3,4},[0-9]{2})\b'
+            r'(?:TIPO\s+DE?\s+CAMBIO|T\.C\.|COTIZACI[OÓ]N|CAMBIO|T/C)\s*[:\$=]?\s*\b([0-9]{1,2}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,4}(?:,[0-9]{1,4})?)\b',
+            r'USD\s*[:\$=]?\s*\b([0-9]{1,2}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,4},[0-9]{2})\b'
         ]
         
-        tc_found = False
         for pat in tc_patterns:
             matches = re.finditer(pat, clean, re.I)
             for mt in matches:
@@ -160,7 +190,8 @@ def extract_aviso(file):
                 break
 
         if not tc_found:
-            all_candidates = re.findall(r'\b([0-9]{1,2}\.[0-9]{3},[0-9]{2}|[0-9]{3,4},[0-9]{2})\b', clean)
+            # Búsqueda estricta de formato ARS para cotizaciones (ej. 1.371,00 o 1438,00)
+            all_candidates = re.findall(r'\b([1-9]\.[0-9]{3},[0-9]{2}|[5-9][0-9]{2},[0-9]{2}|1[0-9]{3},[0-9]{2})\b', clean)
             for cand in all_candidates:
                 val = parse_num(cand)
                 if 500 <= val <= 4000:
@@ -168,7 +199,7 @@ def extract_aviso(file):
                     break
 
         # Importe Acreditado en Pesos
-        acred_match = re.search(r'(?:Importe\s+acreditado|Liquidado\s+en\s+Cta|Neto\s+Acreditado|Total\s+Acreditado|ACREDITAR)[^\d]*\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})\b', clean, re.I)
+        acred_match = re.search(r'(?:Importe\s+acreditado|Liquidado\s+en\s+Cta|Neto\s+Acreditado|Total\s+Acreditado|ACREDITAR|IMPORTE\s+NETO)[^\d]*\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})\b', clean, re.I)
         if acred_match:
             res['acreditado'] = parse_num(acred_match.group(1))
 
@@ -218,7 +249,6 @@ def process_pdf_swift(key_name, op_id):
             if "swift_usd" in data: st.session_state[f"sw_{key_name}_{op_id}"] = float(data["swift_usd"])
             if "gasto_swift" in data: st.session_state[f"gw_{key_name}_{op_id}"] = float(data["gasto_swift"])
             
-            # Recalcular acreditado si ya hay T.C. Liq
             sub = op[key_name]
             if sub["tc_liq"] > 0:
                 acred_calc = max(0.0, (sub["swift_usd"] - sub["gasto_swift"]) * sub["tc_liq"] - sub["comision"] - sub["rg"] - sub["iva"])
@@ -240,7 +270,6 @@ def process_pdf_aviso(key_name, op_id):
             if "rg" in data: st.session_state[f"rg_{key_name}_{op_id}"] = float(data["rg"])
             if "iva" in data: st.session_state[f"iva_{key_name}_{op_id}"] = float(data["iva"])
             
-            # Autocálculo de acreditado si no vino explícito en el PDF
             if data.get("acreditado", 0) > 0:
                 st.session_state[f"ac_{key_name}_{op_id}"] = float(data["acreditado"])
             elif sub["tc_liq"] > 0 and sub["swift_usd"] > 0:
@@ -275,7 +304,7 @@ def generate_pdf_report(op):
     return bytes(pdf.output())
 
 # ---------------------------------------------------------
-# SINCRONIZACIÓN INICIAL
+# SINCRONIZACIÓN INICIAL Y OPERACIÓN ACTIVA
 # ---------------------------------------------------------
 current_op = next((op for op in st.session_state.export_operations if op["id"] == st.session_state.current_id), None)
 if not current_op:
@@ -307,15 +336,27 @@ def sync_op_to_state(op):
 
 sync_op_to_state(current_op)
 
-# PANEL IZQUIERDO
+# ---------------------------------------------------------
+# PANEL LATERAL CON PORCENTAJE DE COBRO DENTRO DE LA LISTA
+# ---------------------------------------------------------
 with st.sidebar:
-    st.title("Exportaciones")
+    st.markdown("<h2 style='font-size: 20px; font-weight: 700; color: #1f2937;'>Exportaciones</h2>", unsafe_allow_html=True)
     st.caption(f"{len(st.session_state.export_operations)} activas")
-    
+    st.divider()
+
     for op in st.session_state.export_operations:
         is_selected = op["id"] == st.session_state.current_id
-        label = f"{op['client'] or 'Sin cliente'} ({op['factura_nro'] or 'S/N'})"
-        if st.button(label, key=f"btn_op_{op['id']}", type="primary" if is_selected else "secondary", use_container_width=True):
+        
+        # Cálculo dinámico del % de pago cobrado
+        tot_sw = op["anticipo"]["swift_usd"] + op["restante"]["swift_usd"]
+        pct = (tot_sw / op["importe_usd"] * 100) if op["importe_usd"] > 0 else 0.0
+        
+        client_name = op['client'] or 'Sin cliente'
+        fnro = op['factura_nro'] or 'S/N'
+        
+        btn_label = f"{client_name}\n({fnro}) — {pct:.1f}%"
+        
+        if st.button(btn_label, key=f"btn_op_{op['id']}", type="primary" if is_selected else "secondary", use_container_width=True):
             st.session_state.current_id = op["id"]
             st.rerun()
 
@@ -333,10 +374,12 @@ with st.sidebar:
         save_data()
         st.rerun()
 
-# TITULO Y BOTONES DE ACCIÓN
+# ---------------------------------------------------------
+# CONTENIDO PRINCIPAL EN TARJETAS ESTILO GOOGLE SITES
+# ---------------------------------------------------------
 col_t1, col_t2 = st.columns([3, 1])
 with col_t1:
-    st.title("Conciliación de Exportación")
+    st.markdown(f"<h1 style='font-size: 28px; font-weight: 700; color: #1a73e8; margin-bottom: 0;'>Conciliación de Exportación</h1>", unsafe_allow_html=True)
     st.caption(f"Factura: {st.session_state[f'main_fnro_{op_id}'] or 'S/N'} — Cliente: {st.session_state[f'main_client_{op_id}'] or 'Sin cliente'}")
 
 with col_t2:
@@ -344,8 +387,11 @@ with col_t2:
         save_data()
         st.toast("¡Datos guardados con éxito!", icon="✅")
 
-# FORMULARIO FACTURA E
-st.subheader("Factura E")
+st.markdown("<br>", unsafe_allow_html=True)
+
+# TARJETA 1: FACTURA E
+st.markdown("<div class='g-card'>", unsafe_allow_html=True)
+st.markdown("<h3 style='font-size: 16px; font-weight: 700; color: #3c4043; margin-bottom: 16px;'>Factura E</h3>", unsafe_allow_html=True)
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 
 current_op["client"] = c1.text_input("Cliente", key=f"main_client_{op_id}")
@@ -354,11 +400,14 @@ current_op["fecha"] = c3.text_input("Fecha", key=f"main_fecha_{op_id}")
 current_op["kilos"] = c4.number_input("Kg Producto", format="%.2f", key=f"main_kg_{op_id}")
 current_op["importe_usd"] = c5.number_input("Importe USD", format="%.2f", key=f"main_imp_{op_id}")
 current_op["tc_factura"] = c6.number_input("T.C. Factura", format="%.2f", key=f"main_tc_{op_id}")
+st.markdown("</div>", unsafe_allow_html=True)
 
 # SECCIONES ANTICIPO Y RESTANTE
 def render_section(title, key_name):
-    st.subheader(title)
+    st.markdown("<div class='g-card'>", unsafe_allow_html=True)
     sub_data = current_op[key_name]
+    
+    st.markdown(f"<h3 style='font-size: 16px; font-weight: 700; color: #3c4043; margin-bottom: 16px;'>{title}</h3>", unsafe_allow_html=True)
     
     # Carga de PDFs
     f1, f2, f3 = st.columns(3)
@@ -376,12 +425,13 @@ def render_section(title, key_name):
     sub_data["rg"] = col_f.number_input("RG 2408 $", format="%.2f", key=f"rg_{key_name}_{op_id}")
     sub_data["iva"] = col_g.number_input("IVA 21% $", format="%.2f", key=f"iva_{key_name}_{op_id}")
     
-    # Recalcular automáticamente Acreditado en UI si viene en 0
+    # Autocálculo de acreditado en UI
     if sub_data["acreditado"] == 0 and sub_data["tc_liq"] > 0 and sub_data["swift_usd"] > 0:
         sub_data["acreditado"] = max(0.0, (sub_data["swift_usd"] - sub_data["gasto_swift"]) * sub_data["tc_liq"] - sub_data["comision"] - sub_data["rg"] - sub_data["iva"])
         st.session_state[f"ac_{key_name}_{op_id}"] = float(sub_data["acreditado"])
         
     sub_data["acreditado"] = col_h.number_input("Acreditado $", format="%.2f", key=f"ac_{key_name}_{op_id}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 render_section("Anticipo", "anticipo")
 render_section("Restante", "restante")
@@ -389,7 +439,6 @@ render_section("Restante", "restante")
 save_data()
 
 # MÉTRICAS Y RESULTADOS FINANCIEROS
-st.divider()
 ant = current_op["anticipo"]
 res = current_op["restante"]
 
@@ -400,6 +449,9 @@ result_fin_ant = neto_usd_ant * (ant["tc_liq"] - current_op["tc_factura"]) if cu
 result_fin_res = neto_usd_res * (res["tc_liq"] - current_op["tc_factura"]) if current_op["tc_factura"] > 0 else 0.0
 total_result_fin = result_fin_ant + result_fin_res
 
+st.markdown("<div class='g-card'>", unsafe_allow_html=True)
+st.markdown("<h3 style='font-size: 16px; font-weight: 700; color: #3c4043; margin-bottom: 16px;'>Resumen Financiero</h3>", unsafe_allow_html=True)
+
 m1, m2, m3, m4 = st.columns(4)
 total_swift = ant["swift_usd"] + res["swift_usd"]
 pct_cobrado = (total_swift / current_op["importe_usd"] * 100) if current_op["importe_usd"] > 0 else 0.0
@@ -408,9 +460,9 @@ m1.metric("% Cobrado", f"{pct_cobrado:.2f}%")
 m2.metric("Saldo Pendiente USD", f"US$ {max(0.0, current_op['importe_usd'] - total_swift):,.2f}")
 m3.metric("Resultado Financiero", f"$ {total_result_fin:,.2f}", delta=f"{total_result_fin:,.2f}")
 m4.metric("Total Acreditado $", f"$ {(ant['acreditado'] + res['acreditado']):,.2f}")
+st.markdown("</div>", unsafe_allow_html=True)
 
 # EXPORTACIÓN EN PDF
-st.divider()
 pdf_bytes = generate_pdf_report(current_op)
 st.download_button(
     label="📥 Exportar Informe en PDF",
