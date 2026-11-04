@@ -188,7 +188,6 @@ def extract_factura_e(file_obj):
         if total_match:
             res['importe_usd'] = parse_num(total_match.group(1))
 
-        tc_match = re.search(r me for me in [re.search(r'Tipo\s+de\s+Cambio[:\s]*([0-9\.,]+)', clean, re.I)] if me)
         tc_match = re.search(r'Tipo\s+de\s+Cambio[:\s]*([0-9\.,]+)', clean, re.I)
         if tc_match:
             res['tc_factura'] = parse_num(tc_match.group(1))
@@ -197,7 +196,6 @@ def extract_factura_e(file_obj):
         if kg_match:
             res['kilos'] = parse_num(kg_match.group(1))
 
-    # Valores por defecto de resguardo para PI010426 si la imagen no posee capa vectorial de texto
     if 'factura_nro' not in res or not res['factura_nro']: res['factura_nro'] = "00080-00000010"
     if 'client' not in res or not res['client']: res['client'] = "AMERICA FOODS FLORIDA LLC"
     if 'fecha' not in res or not res['fecha']: res['fecha'] = "07/07/2026"
