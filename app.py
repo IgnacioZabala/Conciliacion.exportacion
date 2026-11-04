@@ -77,7 +77,6 @@ def load_data():
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Asegurar compatibilidad si cargan JSON viejo sin el campo 'nombre'
                 for op in data:
                     if "nombre" not in op:
                         op["nombre"] = f"{op.get('id', 1)} - PI{op.get('factura_nro', '0000').replace('-', '')}"
@@ -104,7 +103,6 @@ def save_data():
 if "export_operations" not in st.session_state:
     st.session_state.export_operations = load_data()
 
-# Función para ordenar las operaciones por número extraído del nombre
 def get_sort_key(op):
     m = re.search(r'^(\d+)', str(op.get("nombre", "")))
     return int(m.group(1)) if m else op.get("id", 0)
@@ -339,6 +337,7 @@ def clear_current_operation():
     oid = st.session_state.current_id
     op = next((o for o in st.session_state.export_operations if o["id"] == oid), None)
     if op:
+        op["nombre"] = f"{oid} - PI00000000"
         op["client"] = ""
         op["factura_nro"] = ""
         op["fecha"] = ""
@@ -348,6 +347,7 @@ def clear_current_operation():
         op["anticipo"] = {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0}
         op["restante"] = {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0}
         
+        st.session_state[f"main_nombre_{oid}"] = op["nombre"]
         st.session_state[f"main_client_{oid}"] = ""
         st.session_state[f"main_fnro_{oid}"] = ""
         st.session_state[f"main_fecha_{oid}"] = ""
@@ -365,6 +365,7 @@ def clear_current_operation():
             st.session_state[f"iva_{key_name}_{oid}"] = 0.0
             st.session_state[f"ac_{key_name}_{oid}"] = 0.0
             
+            # ELIMINAR LOS ARCHIVOS PDF CARGADOS EN LOS UPLOADERS
             for up_type in ["fac", "swift", "aviso"]:
                 up_key = f"uploader_{up_type}_{key_name}_{oid}"
                 if up_key in st.session_state:
@@ -511,7 +512,6 @@ with st.sidebar:
     st.caption(f"{len(st.session_state.export_operations)} operaciones activas")
     st.divider()
 
-    # Reordenar al vuelo antes de renderizar
     st.session_state.export_operations.sort(key=get_sort_key)
 
     for op in st.session_state.export_operations:
