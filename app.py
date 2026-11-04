@@ -91,9 +91,9 @@ def load_data():
         "fecha": "07/07/2026",
         "kilos": 23958.00,
         "importe_usd": 105415.20,
-        "tc_factura": 1486.50,
-        "anticipo": {"fecha": "28/07/2026", "swift_usd": 52662.60, "gasto_swift": 45.00, "tc_liq": 1499.50, "comision": 157489.79, "rg": 4724.69, "iva": 33072.86, "acreditado": 78549605.61},
-        "restante": {"fecha": "19/08/2026", "swift_usd": 52662.60, "gasto_swift": 45.00, "tc_liq": 1496.50, "comision": 137527.86, "rg": 4125.84, "iva": 28880.85, "acreditado": 78416816.10}
+        "tc_factura": 1489.00,
+        "anticipo": {"fecha": "28/07/2026", "swift_usd": 22465.00, "gasto_swift": 45.00, "tc_liq": 1352.00, "comision": 87880.00, "rg": 2636.40, "iva": 18454.80, "acreditado": 30263708.80},
+        "restante": {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0}
     }]
 
 def save_data():
@@ -207,13 +207,6 @@ def extract_factura_e(file_obj):
         if kg_match:
             res['kilos'] = parse_num(kg_match.group(1))
 
-    if 'factura_nro' not in res or not res['factura_nro']: res['factura_nro'] = "00080-00000010"
-    if 'client' not in res or not res['client']: res['client'] = "AMERICA FOODS FLORIDA LLC"
-    if 'fecha' not in res or not res['fecha']: res['fecha'] = "07/07/2026"
-    if 'importe_usd' not in res or res['importe_usd'] == 0: res['importe_usd'] = 105415.20
-    if 'tc_factura' not in res or res['tc_factura'] == 0: res['tc_factura'] = 1486.50
-    if 'kilos' not in res or res['kilos'] == 0: res['kilos'] = 23958.00
-        
     return res
 
 def extract_swift(file_obj):
@@ -237,10 +230,6 @@ def extract_swift(file_obj):
 
         m_fecha = re.search(r'FECHA:?\s*([0-9]{2}/[0-9]{2}/[0-9]{4})', clean, re.I)
         if m_fecha: res['fecha'] = m_fecha.group(1)
-
-    if 'swift_usd' not in res or res['swift_usd'] == 0: res['swift_usd'] = 52662.60
-    if 'gasto_swift' not in res or res['gasto_swift'] == 0: res['gasto_swift'] = 45.00
-    if 'fecha' not in res or not res['fecha']: res['fecha'] = "07/07/2026"
 
     return res
 
@@ -272,14 +261,6 @@ def extract_aviso(file_obj):
         if nums_all:
             res['acreditado'] = parse_num(nums_all[-1])
 
-    if 'fecha' not in res or not res['fecha']: res['fecha'] = "28/07/2026"
-    if 'swift_usd' not in res or res['swift_usd'] == 0: res['swift_usd'] = 52662.60
-    if 'tc_liq' not in res or res['tc_liq'] == 0: res['tc_liq'] = 1499.50
-    if 'comision' not in res or res['comision'] == 0: res['comision'] = 157489.79
-    if 'rg' not in res or res['rg'] == 0: res['rg'] = 4724.69
-    if 'iva' not in res or res['iva'] == 0: res['iva'] = 33072.86
-    if 'acreditado' not in res or res['acreditado'] == 0: res['acreditado'] = 78549605.61
-
     return res
 
 # ---------------------------------------------------------
@@ -290,14 +271,14 @@ def process_pdf_factura(key_name, op_id):
     if file:
         data = extract_factura_e(file)
         op = next((o for o in st.session_state.export_operations if o["id"] == op_id), None)
-        if op:
+        if op and data:
             op.update(data)
-            st.session_state[f"main_client_{op_id}"] = op["client"]
-            st.session_state[f"main_fnro_{op_id}"] = op["factura_nro"]
-            st.session_state[f"main_fecha_{op_id}"] = op["fecha"]
-            st.session_state[f"main_kg_{op_id}"] = float(op["kilos"])
-            st.session_state[f"main_imp_{op_id}"] = float(op["importe_usd"])
-            st.session_state[f"main_tc_{op_id}"] = float(op["tc_factura"])
+            st.session_state[f"main_client_{op_id}"] = op.get("client", op["client"])
+            st.session_state[f"main_fnro_{op_id}"] = op.get("factura_nro", op["factura_nro"])
+            st.session_state[f"main_fecha_{op_id}"] = op.get("fecha", op["fecha"])
+            st.session_state[f"main_kg_{op_id}"] = float(op.get("kilos", op["kilos"]))
+            st.session_state[f"main_imp_{op_id}"] = float(op.get("importe_usd", op["importe_usd"]))
+            st.session_state[f"main_tc_{op_id}"] = float(op.get("tc_factura", op["tc_factura"]))
             save_data()
             st.toast("Factura E procesada con éxito", icon="📄")
 
@@ -306,13 +287,12 @@ def process_pdf_swift(key_name, op_id):
     if file:
         data = extract_swift(file)
         op = next((o for o in st.session_state.export_operations if o["id"] == op_id), None)
-        if op:
+        if op and data:
             op[key_name].update(data)
             sub = op[key_name]
-            st.session_state[f"sw_{key_name}_{op_id}"] = float(sub["swift_usd"])
-            st.session_state[f"gw_{key_name}_{op_id}"] = float(sub["gasto_swift"])
-            if sub["fecha"]:
-                st.session_state[f"f_{key_name}_{op_id}"] = sub["fecha"]
+            if "swift_usd" in data: st.session_state[f"sw_{key_name}_{op_id}"] = float(sub["swift_usd"])
+            if "gasto_swift" in data: st.session_state[f"gw_{key_name}_{op_id}"] = float(sub["gasto_swift"])
+            if sub.get("fecha"): st.session_state[f"f_{key_name}_{op_id}"] = sub["fecha"]
             save_data()
             st.toast(f"SWIFT ({key_name.capitalize()}) cargado correctamente", icon="🏦")
 
@@ -321,16 +301,16 @@ def process_pdf_aviso(key_name, op_id):
     if file:
         data = extract_aviso(file)
         op = next((o for o in st.session_state.export_operations if o["id"] == op_id), None)
-        if op:
+        if op and data:
             op[key_name].update(data)
             sub = op[key_name]
-            st.session_state[f"f_{key_name}_{op_id}"] = sub["fecha"]
-            st.session_state[f"sw_{key_name}_{op_id}"] = float(sub["swift_usd"])
-            st.session_state[f"tc_{key_name}_{op_id}"] = float(sub["tc_liq"])
-            st.session_state[f"cm_{key_name}_{op_id}"] = float(sub["comision"])
-            st.session_state[f"rg_{key_name}_{op_id}"] = float(sub["rg"])
-            st.session_state[f"iva_{key_name}_{op_id}"] = float(sub["iva"])
-            st.session_state[f"ac_{key_name}_{op_id}"] = float(sub["acreditado"])
+            if sub.get("fecha"): st.session_state[f"f_{key_name}_{op_id}"] = sub["fecha"]
+            if "swift_usd" in data: st.session_state[f"sw_{key_name}_{op_id}"] = float(sub["swift_usd"])
+            if "tc_liq" in data: st.session_state[f"tc_{key_name}_{op_id}"] = float(sub["tc_liq"])
+            if "comision" in data: st.session_state[f"cm_{key_name}_{op_id}"] = float(sub["comision"])
+            if "rg" in data: st.session_state[f"rg_{key_name}_{op_id}"] = float(sub["rg"])
+            if "iva" in data: st.session_state[f"iva_{key_name}_{op_id}"] = float(sub["iva"])
+            if "acreditado" in data: st.session_state[f"ac_{key_name}_{op_id}"] = float(sub["acreditado"])
             save_data()
             st.toast(f"Aviso Crédito ({key_name.capitalize()}) cargado correctamente", icon="📊")
 
@@ -387,7 +367,6 @@ def generate_pdf_report(op):
     nombre_exportacion = op.get('nombre', 'Exportación')
     cliente_nombre = op.get('client', 'Cliente')
 
-    # Título principal centrado con el nombre completo
     pdf.set_font("Helvetica", "B", 16)
     pdf.cell(0, 10, f"Conciliacion Exportacion {nombre_exportacion}", ln=True, align='C')
     pdf.ln(4)
@@ -426,6 +405,7 @@ def generate_pdf_report(op):
         iva = p.get("iva", 0.0)
         tot_gastos = com + rg + iva
         
+        # Fórmula corregida: (TC Liq - TC Factura) * (Swift USD + Gasto Swift USD)
         res_fin = (tc_liq - tc_fac) * (sw_usd + gw_usd) if (tc_fac > 0 and tc_liq > 0) else 0.0
         
         swift_calc = gw_usd * tc_liq
@@ -464,7 +444,6 @@ def generate_pdf_report(op):
     pdf.cell(0, 6.5, f"Total Facturado: USD {fmt_usd(imp_usd)}", ln=True)
     pdf.ln(2)
 
-    # Validar si hay saldo a favor (pagado > facturado)
     if tot_pagado > imp_usd:
         excedente_usd = tot_pagado - imp_usd
         excedente_ars = excedente_usd * active_tc_liq
@@ -660,7 +639,6 @@ res_com_total = res["comision"] + res["rg"] + res["iva"]
 res_acobrar_ars = res_liq_ars - res_com_total
 res_res_fin = (res["tc_liq"] - current_op["tc_factura"]) * (res["swift_usd"] + res["gasto_swift"]) if (current_op["tc_factura"] > 0 and res["tc_liq"] > 0) else 0.0
 
-tot_swift_usd = (ant["swift_usd"] + ant["gasto_swift"]) + (res["swift_usd"] + res["gasto_swift"]) # Total pagado neto + swift
 tot_swift_neto = ant["swift_usd"] + res["swift_usd"]
 tot_com_total = ant_com_total + res_com_total
 tot_res_fin = ant_res_fin + res_res_fin
