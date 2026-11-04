@@ -164,64 +164,125 @@ def extract_aviso(file):
         if f_match:
             res['fecha'] = f_match.group(1)
 
-        # Monto USD del aviso Santander
-        m_usd = re.search(r'(?:USD|USD\b)\s*([0-9]{1,3}(?:\.[0-9]{3})+|[0-9]{4,8}(?:[\.,][0-9]{1,2})?)', clean, re.I) or \
-                re.search(r'(?:80%|20%|100%)\s+USD\s+([0-9\.,]+)', clean, re.I)
+        # Monto USD del aviso Santander (ej: "20% USD 22.465" o "80% USD 90.185")
+        m_usd = re.search(r'(?:20%|80%|100%|MONEDA)?\s*USD\s+([0-9]{1,3}(?:\.[0-9]{3})*|[0-9]{4,8})', clean, re.I) or \
+                re.search(r'USD\s+([0-9\.,]+)', clean, re.I)
         if m_usd:
             v_usd = parse_num(m_usd.group(1))
             if v_usd > 100:
                 res['swift_usd'] = v_usd
 
-        # T.C. Liquidación (Rango válido cotizaciones ARS)
-        matches_nums = re.findall(r'\b([0-9]{3,4}(?:[\.,][0-9]{1,4})?)\b', clean)
-        for n_str in matches_nums:
-            val = parse_num(n_str)
-            if 500 <= val <= 5000:
-                res['tc_liq'] = val
-                break
+        # T.C. Liquidación (Santander: busca valores en rango de cotización de 500 a 5000)
+        tc_candidates = []
+        tokens = clean.split(' ')
+        for t in tokens:
+            v = parse_num(t)
+            if 500 <= v <= 5000:
+                tc_candidates.append(v)
+        if tc_candidates:
+            res['tc_liq'] = tc_candidates[0]
 
         # COMISION (ARS)
-        m_com = re.search(r'COMISI[OÓ]N[^\n]*?([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:[\.,][0-9]{1,2})?)', clean, re.I)
+        m_com = re.search(r'COMISION[^\n]*', clean, re.I)
         if m_com:
-            com_block = clean[m_com.start():m_com.start()+150]
-            nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:[\.,][0-9]{1,2})?)\b', com_block)
-            if nums:
-                ars_nums = [parse_num(x) for x in nums if parse_num(x) > 100 and parse_num(x) != res.get('tc_liq', 0)]
-                if ars_nums:
-                    res['comision'] = ars_nums[-1]
+            com_text = m_com.group(0)[:120]
+            nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:\.[0-9]{2})?)\b', com_text)
+            parsed_nums = [parse_num(x) for x in nums]
+            com_ars = [x for x in parsed_nums if x > 500 and x != res.get('tc_liq') and x != res.get('swift_usd')]
+            if com_ars:
+                res['comision'] = com_ars[-1]
 
         # RG 2408 (ARS)
-        m_rg = re.search(r'RG\s*2408[^\n]*?([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,7}(?:[\.,][0-9]{1,2})?)', clean, re.I)
+        m_rg = re.search(r'RG2408[^\n]*', clean, re.I) or re.search(r'RG\s*2408[^\n]*', clean, re.I)
         if m_rg:
-            rg_block = clean[m_rg.start():m_rg.start()+150]
-            nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,7}(?:[\.,][0-9]{1,2})?)\b', rg_block)
-            if nums:
-                ars_nums = [parse_num(x) for x in nums if parse_num(x) > 10 and parse_num(x) != res.get('tc_liq', 0)]
-                if ars_nums:
-                    res['rg'] = ars_nums[-1]
+            rg_text = m_rg.group(0)[:120]
+            nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,7}(?:\.[0-9]{2})?)\b', rg_text)
+            parsed_nums = [parse_num(x) for x in nums]
+            rg_ars = [x for x in parsed_nums if x > 10 and x != res.get('tc_liq') and x != res.get('swift_usd')]
+            if rg_ars:
+                res['rg'] = rg_ars[-1]
 
         # IVA 21% (ARS)
-        m_iva = re.search(r'IVA\s+21%[^\n]*?([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:[\.,][0-9]{1,2})?)', clean, re.I)
+        m_iva = re.search(r'IVA\s+21%[^\n]*', clean, re.I)
         if m_iva:
-            iva_block = clean[m_iva.start():m_iva.start()+150]
-            nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:[\.,][0-9]{1,2})?)\b', iva_block)
-            if nums:
-                ars_nums = [parse_num(x) for x in nums if parse_num(x) > 100 and parse_num(x) != res.get('tc_liq', 0)]
-                if ars_nums:
-                    res['iva'] = ars_nums[-1]
+            iva_text = m_iva.group(0)[:120]
+            nums = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:\.[0-9]{2})?)\b', iva_text)
+            parsed_nums = [parse_num(x) for x in nums]
+            iva_ars = [x for x in parsed_nums if x > 100 and x != res.get('tc_liq') and x != res.get('swift_usd')]
+            if iva_ars:
+                res['iva'] = iva_ars[-1]
 
         # TOTAL ACREDITADO (ARS)
-        m_tot = re.search(r'(?:total|Importe\s+acreditado)[^\d]*([0-9]{7,11}(?:[\.,][0-9]{1,2})?|[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})', clean, re.I)
+        m_tot = re.search(r'(?:total|acreditado|CLIE11405707098)[^\d]*([0-9]{7,11}(?:\.[0-9]{1,2})?|[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})', clean, re.I)
         if m_tot:
             val_tot = parse_num(m_tot.group(1))
             if val_tot > 100000:
                 res['acreditado'] = val_tot
-        else:
-            all_large = [parse_num(x) for x in re.findall(r'\b([0-9]{7,11}(?:[\.,][0-9]{1,2})?)\b', clean)]
+        if 'acreditado' not in res:
+            all_large = [parse_num(x) for x in re.findall(r'\b([0-9]{7,11}(?:\.[0-9]{1,2})?)\b', clean)]
             if all_large:
                 res['acreditado'] = max(all_large)
 
     return res
+
+# ---------------------------------------------------------
+# CALLBACKS DE CARGA DE ARCHIVOS (EJECUCIÓN SEGURA)
+# ---------------------------------------------------------
+def process_pdf_factura(key_name, op_id):
+    file = st.session_state.get(f"uploader_fac_{key_name}_{op_id}")
+    if file:
+        data = extract_factura_e(file)
+        op = next((o for o in st.session_state.export_operations if o["id"] == op_id), None)
+        if op and data:
+            op.update(data)
+            if "client" in data: st.session_state[f"main_client_{op_id}"] = data["client"]
+            if "factura_nro" in data: st.session_state[f"main_fnro_{op_id}"] = data["factura_nro"]
+            if "fecha" in data: st.session_state[f"main_fecha_{op_id}"] = data["fecha"]
+            if "kilos" in data: st.session_state[f"main_kg_{op_id}"] = float(data["kilos"])
+            if "importe_usd" in data: st.session_state[f"main_imp_{op_id}"] = float(data["importe_usd"])
+            if "tc_factura" in data: st.session_state[f"main_tc_{op_id}"] = float(data["tc_factura"])
+            save_data()
+
+def process_pdf_swift(key_name, op_id):
+    file = st.session_state.get(f"uploader_swift_{key_name}_{op_id}")
+    if file:
+        data = extract_swift(file)
+        op = next((o for o in st.session_state.export_operations if o["id"] == op_id), None)
+        if op and data:
+            op[key_name].update(data)
+            if "swift_usd" in data: st.session_state[f"sw_{key_name}_{op_id}"] = float(data["swift_usd"])
+            if "gasto_swift" in data: st.session_state[f"gw_{key_name}_{op_id}"] = float(data["gasto_swift"])
+            
+            sub = op[key_name]
+            if sub["tc_liq"] > 0 and sub["swift_usd"] > 0:
+                acred_calc = max(0.0, (sub["swift_usd"] - sub["gasto_swift"]) * sub["tc_liq"] - sub["comision"] - sub["rg"] - sub["iva"])
+                sub["acreditado"] = acred_calc
+                st.session_state[f"ac_{key_name}_{op_id}"] = float(acred_calc)
+            save_data()
+
+def process_pdf_aviso(key_name, op_id):
+    file = st.session_state.get(f"uploader_aviso_{key_name}_{op_id}")
+    if file:
+        data = extract_aviso(file)
+        op = next((o for o in st.session_state.export_operations if o["id"] == op_id), None)
+        if op and data:
+            op[key_name].update(data)
+            sub = op[key_name]
+            if "fecha" in data: st.session_state[f"f_{key_name}_{op_id}"] = data["fecha"]
+            if "tc_liq" in data: st.session_state[f"tc_{key_name}_{op_id}"] = float(data["tc_liq"])
+            if "swift_usd" in data and st.session_state.get(f"sw_{key_name}_{op_id}", 0) == 0:
+                st.session_state[f"sw_{key_name}_{op_id}"] = float(data["swift_usd"])
+                sub["swift_usd"] = float(data["swift_usd"])
+            if "comision" in data: st.session_state[f"cm_{key_name}_{op_id}"] = float(data["comision"])
+            if "rg" in data: st.session_state[f"rg_{key_name}_{op_id}"] = float(data["rg"])
+            if "iva" in data: st.session_state[f"iva_{key_name}_{op_id}"] = float(data["iva"])
+            if "acreditado" in data:
+                st.session_state[f"ac_{key_name}_{op_id}"] = float(data["acreditado"])
+            elif sub["tc_liq"] > 0 and sub["swift_usd"] > 0:
+                acred_calc = max(0.0, (sub["swift_usd"] - sub["gasto_swift"]) * sub["tc_liq"] - sub["comision"] - sub["rg"] - sub["iva"])
+                sub["acreditado"] = acred_calc
+                st.session_state[f"ac_{key_name}_{op_id}"] = float(acred_calc)
+            save_data()
 
 # ---------------------------------------------------------
 # FUNCION PARA LIMPIAR DATOS
@@ -260,9 +321,6 @@ def clear_current_operation():
                 up_key = f"uploader_{up_type}_{key_name}_{oid}"
                 if up_key in st.session_state:
                     del st.session_state[up_key]
-                proc_key = f"processed_{up_type}_{key_name}_{oid}"
-                if proc_key in st.session_state:
-                    del st.session_state[proc_key]
         
         save_data()
         st.toast("Datos y archivos limpiados correctamente", icon="🧹")
@@ -395,65 +453,20 @@ current_op["importe_usd"] = c5.number_input("Importe USD", format="%.2f", key=f"
 current_op["tc_factura"] = c6.number_input("T.C. Factura", format="%.2f", key=f"main_tc_{op_id}")
 st.markdown("</div>", unsafe_allow_html=True)
 
-# SECCIONES ANTICIPO Y RESTANTE CON PROCESAMIENTO DIRECTO EN TIEMPO DE EJECUCIÓN
+# SECCIONES ANTICIPO Y RESTANTE (CON CALLBACKS PUROS)
 def render_section(title, key_name):
     st.markdown("<div class='g-card'>", unsafe_allow_html=True)
     sub_data = current_op[key_name]
     
     st.markdown(f"<h3 style='font-size: 16px; font-weight: 700; color: #3c4043; margin-bottom: 16px;'>{title}</h3>", unsafe_allow_html=True)
     
-    # Carga de PDFs
+    # Carga de PDFs con Callbacks on_change
     f1, f2, f3 = st.columns(3)
-    up_fac = f1.file_uploader(f"Factura E ({title})", type=["pdf"], key=f"uploader_fac_{key_name}_{op_id}")
-    up_sw = f2.file_uploader(f"SWIFT ({title})", type=["pdf"], key=f"uploader_swift_{key_name}_{op_id}")
-    up_av = f3.file_uploader(f"Aviso Crédito ({title})", type=["pdf"], key=f"uploader_aviso_{key_name}_{op_id}")
+    f1.file_uploader(f"Factura E ({title})", type=["pdf"], key=f"uploader_fac_{key_name}_{op_id}", on_change=process_pdf_factura, args=(key_name, op_id))
+    f2.file_uploader(f"SWIFT ({title})", type=["pdf"], key=f"uploader_swift_{key_name}_{op_id}", on_change=process_pdf_swift, args=(key_name, op_id))
+    f3.file_uploader(f"Aviso Crédito ({title})", type=["pdf"], key=f"uploader_aviso_{key_name}_{op_id}", on_change=process_pdf_aviso, args=(key_name, op_id))
 
-    # PROCESAMIENTO DE ARCHIVOS AL INSTANTE
-    if up_fac:
-        tag = f"processed_fac_{key_name}_{op_id}_{up_fac.name}_{up_fac.size}"
-        if not st.session_state.get(tag):
-            data = extract_factura_e(up_fac)
-            if data:
-                current_op.update(data)
-                if "client" in data: st.session_state[f"main_client_{op_id}"] = data["client"]
-                if "factura_nro" in data: st.session_state[f"main_fnro_{op_id}"] = data["factura_nro"]
-                if "fecha" in data: st.session_state[f"main_fecha_{op_id}"] = data["fecha"]
-                if "kilos" in data: st.session_state[f"main_kg_{op_id}"] = float(data["kilos"])
-                if "importe_usd" in data: st.session_state[f"main_imp_{op_id}"] = float(data["importe_usd"])
-                if "tc_factura" in data: st.session_state[f"main_tc_{op_id}"] = float(data["tc_factura"])
-                st.session_state[tag] = True
-                save_data()
-
-    if up_sw:
-        tag = f"processed_sw_{key_name}_{op_id}_{up_sw.name}_{up_sw.size}"
-        if not st.session_state.get(tag):
-            data = extract_swift(up_sw)
-            if data:
-                sub_data.update(data)
-                if "swift_usd" in data: st.session_state[f"sw_{key_name}_{op_id}"] = float(data["swift_usd"])
-                if "gasto_swift" in data: st.session_state[f"gw_{key_name}_{op_id}"] = float(data["gasto_swift"])
-                st.session_state[tag] = True
-                save_data()
-
-    if up_av:
-        tag = f"processed_av_{key_name}_{op_id}_{up_av.name}_{up_av.size}"
-        if not st.session_state.get(tag):
-            data = extract_aviso(up_av)
-            if data:
-                sub_data.update(data)
-                if "fecha" in data: st.session_state[f"f_{key_name}_{op_id}"] = data["fecha"]
-                if "tc_liq" in data: st.session_state[f"tc_{key_name}_{op_id}"] = float(data["tc_liq"])
-                if "swift_usd" in data and st.session_state.get(f"sw_{key_name}_{op_id}", 0) == 0:
-                    st.session_state[f"sw_{key_name}_{op_id}"] = float(data["swift_usd"])
-                    sub_data["swift_usd"] = float(data["swift_usd"])
-                if "comision" in data: st.session_state[f"cm_{key_name}_{op_id}"] = float(data["comision"])
-                if "rg" in data: st.session_state[f"rg_{key_name}_{op_id}"] = float(data["rg"])
-                if "iva" in data: st.session_state[f"iva_{key_name}_{op_id}"] = float(data["iva"])
-                if "acreditado" in data: st.session_state[f"ac_{key_name}_{op_id}"] = float(data["acreditado"])
-                st.session_state[tag] = True
-                save_data()
-
-    # Inputs Editables
+    # Inputs Editables vinculados directamente a session_state
     col_a, col_b, col_c, col_d, col_e, col_f, col_g, col_h = st.columns(8)
     sub_data["fecha"] = col_a.text_input("Fecha Acred.", key=f"f_{key_name}_{op_id}")
     sub_data["swift_usd"] = col_b.number_input("Swift USD", format="%.2f", key=f"sw_{key_name}_{op_id}")
@@ -462,12 +475,6 @@ def render_section(title, key_name):
     sub_data["comision"] = col_e.number_input("Comisión $", format="%.2f", key=f"cm_{key_name}_{op_id}")
     sub_data["rg"] = col_f.number_input("RG 2408 $", format="%.2f", key=f"rg_{key_name}_{op_id}")
     sub_data["iva"] = col_g.number_input("IVA 21% $", format="%.2f", key=f"iva_{key_name}_{op_id}")
-    
-    if st.session_state.get(f"ac_{key_name}_{op_id}", 0) == 0 and sub_data["tc_liq"] > 0 and sub_data["swift_usd"] > 0:
-        acred_calc = max(0.0, (sub_data["swift_usd"] - sub_data["gasto_swift"]) * sub_data["tc_liq"] - sub_data["comision"] - sub_data["rg"] - sub_data["iva"])
-        sub_data["acreditado"] = acred_calc
-        st.session_state[f"ac_{key_name}_{op_id}"] = float(acred_calc)
-        
     sub_data["acreditado"] = col_h.number_input("Acreditado $", format="%.2f", key=f"ac_{key_name}_{op_id}")
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -477,7 +484,7 @@ render_section("Restante", "restante")
 save_data()
 
 # ---------------------------------------------------------
-# MÉTRICAS Y RESULTADOS FINANCIEROS (CON INDICADOR VERDE / ROJO)
+# MÉTRICAS Y RESULTADOS FINANCIEROS
 # ---------------------------------------------------------
 ant = current_op["anticipo"]
 res = current_op["restante"]
