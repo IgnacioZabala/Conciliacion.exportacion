@@ -98,7 +98,7 @@ def load_data():
 
 def save_data():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(st.session_state.export_operations, f, ensure_allow_html=False, indent=2)
+        json.dump(st.session_state.export_operations, f, ensure_ascii=False, indent=2)
 
 if "export_operations" not in st.session_state:
     st.session_state.export_operations = load_data()
