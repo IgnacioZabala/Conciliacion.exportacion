@@ -85,7 +85,7 @@ def load_data():
             pass
     return [{
         "id": 1,
-        "nombre": "1 - PI00000010",
+        "nombre": "3 - PI010426",
         "client": "AMERICA FOODS FLORIDA LLC",
         "factura_nro": "00080-00000010",
         "fecha": "07/07/2026",
@@ -268,7 +268,6 @@ def extract_aviso(file_obj):
         m_iva = re.search(r'IVA\s+21%[^\n]*USD\s+[0-9\.,]+\s+[0-9\.,]+\s+(?:\|\s*)?([0-9\.,]+)', clean, re.I)
         if m_iva: res['iva'] = parse_num(m_iva.group(1))
 
-        # Capturar el importe acreditado del pie del aviso de crédito (último número al pie del documento)
         nums_all = re.findall(r'\b[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}\b', clean)
         if nums_all:
             res['acreditado'] = parse_num(nums_all[-1])
@@ -388,16 +387,17 @@ def generate_pdf_report(op):
 
     # Título Principal Centrado con el Nombre de la Exportación
     nombre_exportacion = op.get('nombre', 'Exportación')
-    pdf.set_font("Helvetica", "B", 15)
+    pdf.set_font("Helvetica", "B", 16)
     pdf.cell(0, 10, nombre_exportacion, ln=True, align='C')
-    pdf.ln(2)
+    pdf.ln(1)
+
+    # Subtítulo con Conciliación de Exportación y el nombre cargado a mano
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 7, f"Conciliacion Exportacion {nombre_exportacion}", ln=True, align='C')
+    pdf.ln(4)
 
     pdf.set_font("Helvetica", "B", 13)
     pdf.cell(0, 8, "Datos de la Factura", ln=True)
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, f"Conciliacion de Exportacion: {op.get('factura_nro', 'S/N')}", ln=True)
-    pdf.ln(2)
-
     pdf.set_font("Helvetica", "", 10.5)
     pdf.cell(0, 6.5, f"Fecha: {op.get('fecha', '')} | Nro: {op.get('factura_nro', '')}", ln=True)
     pdf.cell(0, 6.5, f"Cliente: {op.get('client', '')}", ln=True)
@@ -430,22 +430,18 @@ def generate_pdf_report(op):
         iva = p.get("iva", 0.0)
         tot_gastos = com + rg + iva
         
-        # Resultado financiero: (tc_liq - tc_factura) * (swift_usd + gasto_swift)
         res_fin = (tc_liq - tc_fac) * (sw_usd + gw_usd) if (tc_fac > 0 and tc_liq > 0) else 0.0
         
-        # 1- Swift: Gasto Swift USD * TC Liq
         swift_calc = gw_usd * tc_liq
         pdf.cell(115, 6.5, f"1- Swift: {fmt_ars(swift_calc)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
 
-        # 2- Gastos de Transaccion
         pdf.cell(115, 6.5, f"2- Gastos de Transaccion: {fmt_ars(tot_gastos)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
 
         pdf.set_font("Helvetica", "I", 9.5)
         pdf.cell(0, 5.5, f"(Comision: {fmt_ars(com)} | RG2408: {fmt_ars(rg)} | IVA: {fmt_ars(iva)})", ln=True)
         
-        # 3- Resultado financiero
         pdf.set_font("Helvetica", "", 10)
         pdf.cell(115, 6.5, f"3- Resultado financiero: {fmt_ars(res_fin)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
