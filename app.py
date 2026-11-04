@@ -136,8 +136,9 @@ def extract_swift(file):
         m_swift = re.search(r'([0-9\.,]+)\s+Cobro\s+(?:Anticipado|definitivo|saldo|Restante)', clean, re.I) or \
                   re.search(r'Importe\s+instruido[^0-9]*([0-9\.,]+)', clean, re.I) or \
                   re.search(r'Monto\s+operaci[oó]n[^0-9]*([0-9\.,]+)', clean, re.I) or \
-                  re.search(r'USD\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})', clean, re.I) or \
-                  re.search(r':32B:[A-Z]{3}([0-9\.,]+)', clean, re.I)
+                  re.search(r'USD\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+(?:\.[0-9]{2})?)', clean, re.I) or \
+                  re.search(r':32B:[A-Z]{3}([0-9\.,]+)', clean, re.I) or \
+                  re.search(r':32A:[0-9]{6}[A-Z]{3}([0-9\.,]+)', clean, re.I)
         if m_swift:
             res['swift_usd'] = parse_num(m_swift.group(1))
 
@@ -162,63 +163,66 @@ def extract_aviso(file):
         if f_match:
             res['fecha'] = f_match.group(1)
 
-        # T.C. LIQUIDACIÓN (Optimizado para modelo Santander)
-        # Santander format: "SUBTOTAL POR TRANSF USD <Monto> <T.C.> <Equiv>" o "USD <Monto> <T.C.> <Equiv>"
+        # PARSER AVANZADO DE T.C. LIQUIDACIÓN (Especial Santander / Bancos)
         tc_found = False
         
-        santander_tc = re.search(r'USD\s+[0-9\.,]+\s+([0-9]{3,4}(?:[\.,][0-9]{1,2})?)\s+[0-9\.,]+', clean, re.I)
-        if santander_tc:
-            val = parse_num(santander_tc.group(1))
+        # Estrategia 1: Buscar números en rango 500..5000 presentes en el documento
+        all_numbers = re.findall(r'\b([0-9]{3,4}(?:[\.,][0-9]{1,2})?)\b', clean)
+        for num_str in all_numbers:
+            val = parse_num(num_str)
             if 500 <= val <= 5000:
                 res['tc_liq'] = val
                 tc_found = True
+                break
 
+        # Estrategia 2: Si hay montos en la tabla Santander (ej: USD 1352 22465 ... o SUBTOTAL 1490.5 90185)
         if not tc_found:
-            tc_patterns = [
-                r'(?:TIPO\s+DE?\s+CAMBIO|T\.C\.|COTIZACI[OÓ]N|CAMBIO|T/C)\s*[:\$=]?\s*\b([0-9]{1,2}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,4}(?:[\.,][0-9]{1,4})?)\b',
-                r'USD\s*[:\$=]?\s*\b([0-9]{1,2}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,4},[0-9]{2})\b'
-            ]
-            for pat in tc_patterns:
-                matches = re.finditer(pat, clean, re.I)
-                for mt in matches:
-                    val = parse_num(mt.group(1))
-                    if 500 <= val <= 5000:
-                        res['tc_liq'] = val
-                        tc_found = True
-                        break
-                if tc_found:
-                    break
+            m_santander = re.search(r'(?:SUBTOTAL|TRANSF|USD)\s+([0-9\.,]+)\s+([0-9\.,]+)', clean, re.I)
+            if m_santander:
+                v1 = parse_num(m_santander.group(1))
+                v2 = parse_num(m_santander.group(2))
+                if 500 <= v1 <= 5000:
+                    res['tc_liq'] = v1
+                    if v2 > 5000: res['swift_usd'] = v2
+                elif 500 <= v2 <= 5000:
+                    res['tc_liq'] = v2
+                    if v1 > 5000: res['swift_usd'] = v1
 
-        if not tc_found:
-            all_candidates = re.findall(r'\b([1-9]\.[0-9]{3},[0-9]{2}|[5-9][0-9]{2},[0-9]{2}|1[0-9]{3}(?:[\.,][0-9]{1,2})?)\b', clean)
-            for cand in all_candidates:
-                val = parse_num(cand)
-                if 500 <= val <= 5000:
-                    res['tc_liq'] = val
-                    break
+        # Extracción de USD si viene en el aviso
+        m_usd = re.search(r'(?:USD|20%\s+USD|80%\s+USD)\s*([0-9]{1,3}(?:\.[0-9]{3})*|[0-9]+)', clean, re.I)
+        if m_usd:
+            val_usd = parse_num(m_usd.group(1))
+            if val_usd > 500:
+                res['swift_usd'] = val_usd
 
-        # Importe Acreditado en Pesos (Santander "total 30263708.8" o "134087379.06")
-        acred_match = re.search(r'(?:Importe\s+acreditado|Liquidado\s+en\s+Cta|Neto\s+Acreditado|Total\s+Acreditado|total|EFECTIVAMENTE\s+COBRADO)[^\d]*\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{7,11}(?:[\.,][0-9]{1,2})?)\b', clean, re.I)
+        # COMISION (ARS)
+        com_match = re.search(r'COMISI[OÓ]N[^\n]*?([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)', clean, re.I)
+        if com_match:
+            # Buscar el último número en la fila de comisión (monto en ARS)
+            nums_com = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:\.[0-9]{2})?)\b', clean[com_match.start():com_match.start()+150])
+            if nums_com:
+                res['comision'] = parse_num(nums_com[-1])
+
+        # RG 2408 (ARS)
+        rg_match = re.search(r'RG\s*2408[^\n]*?([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)', clean, re.I)
+        if rg_match:
+            nums_rg = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,7}(?:\.[0-9]{2})?)\b', clean[rg_match.start():rg_match.start()+150])
+            if nums_rg:
+                res['rg'] = parse_num(nums_rg[-1])
+
+        # IVA 21% (ARS)
+        iva_match = re.search(r'IVA\s+21%[^\n]*?([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)', clean, re.I)
+        if iva_match:
+            nums_iva = re.findall(r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{4,8}(?:\.[0-9]{2})?)\b', clean[iva_match.start():iva_match.start()+150])
+            if nums_iva:
+                res['iva'] = parse_num(nums_iva[-1])
+
+        # TOTAL ACREDITADO (ARS)
+        acred_match = re.search(r'(?:Importe\s+acreditado|total|CLIE11405707098)[^\d]*\b([0-9]{7,11}(?:[\.,][0-9]{1,2})?|[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})\b', clean, re.I)
         if acred_match:
             val_acred = parse_num(acred_match.group(1))
             if val_acred > 10000:
                 res['acreditado'] = val_acred
-
-        # Comisión / RG 2408 / IVA 21%
-        com_match = re.search(r'COMISION[^\$]*?USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I) or \
-                    re.search(r'COMISI[OÓ]N[^\d]*\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})\b', clean, re.I)
-        if com_match:
-            res['comision'] = parse_num(com_match.group(1))
-
-        rg_match = re.search(r'RG2408[^\$]*?USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I) or \
-                   re.search(r'RG\s*2408[^\d]*\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})\b', clean, re.I)
-        if rg_match:
-            res['rg'] = parse_num(rg_match.group(1))
-
-        iva_match = re.search(r'IVA\s+21%[^\$]*?USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I) or \
-                    re.search(r'IVA\s+21%[^\d]*\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})\b', clean, re.I)
-        if iva_match:
-            res['iva'] = parse_num(iva_match.group(1))
 
     return res
 
@@ -239,6 +243,7 @@ def process_pdf_factura(key_name, op_id):
             if "importe_usd" in data: st.session_state[f"main_imp_{op_id}"] = float(data["importe_usd"])
             if "tc_factura" in data: st.session_state[f"main_tc_{op_id}"] = float(data["tc_factura"])
             save_data()
+            st.toast("Factura E procesada con éxito", icon="📄")
 
 def process_pdf_swift(key_name, op_id):
     file = st.session_state.get(f"uploader_swift_{key_name}_{op_id}")
@@ -251,11 +256,12 @@ def process_pdf_swift(key_name, op_id):
             if "gasto_swift" in data: st.session_state[f"gw_{key_name}_{op_id}"] = float(data["gasto_swift"])
             
             sub = op[key_name]
-            if sub["tc_liq"] > 0:
+            if sub["tc_liq"] > 0 and sub["swift_usd"] > 0:
                 acred_calc = max(0.0, (sub["swift_usd"] - sub["gasto_swift"]) * sub["tc_liq"] - sub["comision"] - sub["rg"] - sub["iva"])
                 sub["acreditado"] = acred_calc
                 st.session_state[f"ac_{key_name}_{op_id}"] = float(acred_calc)
             save_data()
+            st.toast(f"SWIFT {key_name.capitalize()} procesado", icon="🏦")
 
 def process_pdf_aviso(key_name, op_id):
     file = st.session_state.get(f"uploader_aviso_{key_name}_{op_id}")
@@ -267,6 +273,9 @@ def process_pdf_aviso(key_name, op_id):
             sub = op[key_name]
             if "fecha" in data: st.session_state[f"f_{key_name}_{op_id}"] = data["fecha"]
             if "tc_liq" in data: st.session_state[f"tc_{key_name}_{op_id}"] = float(data["tc_liq"])
+            if "swift_usd" in data and sub["swift_usd"] == 0:
+                sub["swift_usd"] = data["swift_usd"]
+                st.session_state[f"sw_{key_name}_{op_id}"] = float(data["swift_usd"])
             if "comision" in data: st.session_state[f"cm_{key_name}_{op_id}"] = float(data["comision"])
             if "rg" in data: st.session_state[f"rg_{key_name}_{op_id}"] = float(data["rg"])
             if "iva" in data: st.session_state[f"iva_{key_name}_{op_id}"] = float(data["iva"])
@@ -278,6 +287,7 @@ def process_pdf_aviso(key_name, op_id):
                 sub["acreditado"] = acred_calc
                 st.session_state[f"ac_{key_name}_{op_id}"] = float(acred_calc)
             save_data()
+            st.toast(f"Aviso Crédito {key_name.capitalize()} procesado", icon="📊")
 
 # ---------------------------------------------------------
 # FUNCION PARA LIMPIAR DATOS DE LA OPERACION ACTIVA
@@ -379,7 +389,7 @@ def sync_op_to_state(op):
 sync_op_to_state(current_op)
 
 # ---------------------------------------------------------
-# PANEL LATERAL CON PORCENTAJE DE COBRO DENTRO DE LA LISTA
+# PANEL LATERAL CON PORCENTAJE DE COBRO
 # ---------------------------------------------------------
 with st.sidebar:
     st.markdown("<h2 style='font-size: 20px; font-weight: 700; color: #1f2937;'>Exportaciones</h2>", unsafe_allow_html=True)
@@ -484,7 +494,7 @@ render_section("Restante", "restante")
 save_data()
 
 # ---------------------------------------------------------
-# MÉTRICAS Y RESULTADOS FINANCIEROS (DETALLADOS)
+# MÉTRICAS Y RESULTADOS FINANCIEROS (CON INDICADOR VERDE / ROJO)
 # ---------------------------------------------------------
 ant = current_op["anticipo"]
 res = current_op["restante"]
@@ -492,6 +502,7 @@ res = current_op["restante"]
 neto_usd_ant = ant["swift_usd"] - ant["gasto_swift"]
 neto_usd_res = res["swift_usd"] - res["gasto_swift"]
 
+# Resultado financiero individual (Si T.C. Liq < T.C. Factura da negativo automáticamente)
 result_fin_ant = neto_usd_ant * (ant["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and ant["tc_liq"] > 0) else 0.0
 result_fin_res = neto_usd_res * (res["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and res["tc_liq"] > 0) else 0.0
 total_result_fin = result_fin_ant + result_fin_res
@@ -505,8 +516,8 @@ pct_cobrado = (total_swift / current_op["importe_usd"] * 100) if current_op["imp
 
 m1.metric("% Cobrado", f"{pct_cobrado:.2f}%")
 m2.metric("Saldo Pendiente USD", f"US$ {max(0.0, current_op['importe_usd'] - total_swift):,.2f}")
-m3.metric("Res. Fin. Anticipo", f"$ {result_fin_ant:,.2f}", delta=f"{result_fin_ant:,.2f}")
-m4.metric("Res. Fin. Restante", f"$ {result_fin_res:,.2f}", delta=f"{result_fin_res:,.2f}")
+m3.metric("Res. Fin. Anticipo", f"$ {result_fin_ant:,.2f}", delta=f"$ {result_fin_ant:,.2f}")
+m4.metric("Res. Fin. Restante", f"$ {result_fin_res:,.2f}", delta=f"$ {result_fin_res:,.2f}")
 m5.metric("Res. Finan. Total", f"$ {total_result_fin:,.2f}", delta=f"{total_result_fin:,.2f}")
 st.markdown("</div>", unsafe_allow_html=True)
 
