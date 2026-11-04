@@ -76,11 +76,17 @@ def load_data():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Asegurar compatibilidad si cargan JSON viejo sin el campo 'nombre'
+                for op in data:
+                    if "nombre" not in op:
+                        op["nombre"] = f"{op.get('id', 1)} - PI{op.get('factura_nro', '0000').replace('-', '')}"
+                return data
         except Exception:
             pass
     return [{
         "id": 1,
+        "nombre": "1 - PI00000010",
         "client": "AMERICA FOODS FLORIDA LLC",
         "factura_nro": "00080-00000010",
         "fecha": "07/07/2026",
@@ -97,6 +103,13 @@ def save_data():
 
 if "export_operations" not in st.session_state:
     st.session_state.export_operations = load_data()
+
+# Función para ordenar las operaciones por número extraído del nombre
+def get_sort_key(op):
+    m = re.search(r'^(\d+)', str(op.get("nombre", "")))
+    return int(m.group(1)) if m else op.get("id", 0)
+
+st.session_state.export_operations.sort(key=get_sort_key)
 
 if "current_id" not in st.session_state:
     st.session_state.current_id = st.session_state.export_operations[0]["id"]
@@ -361,7 +374,7 @@ def clear_current_operation():
         st.toast("Datos y archivos limpiados correctamente", icon="🧹")
 
 # ---------------------------------------------------------
-# GENERADOR DE REPORTES PDF (MEJORADO)
+# GENERADOR DE REPORTES PDF
 # ---------------------------------------------------------
 def generate_pdf_report(op):
     pdf = FPDF()
@@ -371,7 +384,6 @@ def generate_pdf_report(op):
     tc_fac = op.get('tc_factura', 0.0)
     imp_usd = op.get('importe_usd', 0.0)
 
-    # Encabezado con más espaciado
     pdf.set_font("Helvetica", "B", 14)
     pdf.cell(0, 8, "Datos de la Factura", ln=True)
     pdf.set_font("Helvetica", "B", 12)
@@ -384,7 +396,6 @@ def generate_pdf_report(op):
     pdf.cell(0, 6.5, f"Monto: USD {fmt_usd(imp_usd)} | Tipo de Cambio (BNA): {tc_fac:,.2f}", ln=True)
     pdf.ln(4)
 
-    # Condición para exportar solo si hay saldo/operación en el Restante
     sections = [("Anticipo:", "anticipo")]
     restante = op.get("restante", {})
     if restante.get("swift_usd", 0.0) > 0 or restante.get("acreditado", 0.0) > 0:
@@ -408,7 +419,6 @@ def generate_pdf_report(op):
         tot_gastos = com + rg + iva
         res_fin = sw_usd * (tc_liq - tc_fac) if (tc_fac > 0 and tc_liq > 0) else 0.0
         
-        # Puntos 1, 2 y 3 con Fecha y Asiento al costado en la misma línea
         pdf.cell(115, 6.5, f"1- Comision: {fmt_ars(com)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
 
@@ -423,7 +433,6 @@ def generate_pdf_report(op):
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
         pdf.ln(4)
 
-    # Validación de Cobro Total
     ant = op["anticipo"]
     ant_tot = ant.get("swift_usd", 0.0) + ant.get("gasto_swift", 0.0)
     
@@ -473,6 +482,7 @@ op_id = current_op["id"]
 def sync_op_to_state(op):
     oid = op["id"]
     if f"main_client_{oid}" not in st.session_state:
+        st.session_state[f"main_nombre_{oid}"] = op.get("nombre", f"{oid} - PI{op.get('factura_nro', '0000')}")
         st.session_state[f"main_client_{oid}"] = op["client"]
         st.session_state[f"main_fnro_{oid}"] = op["factura_nro"]
         st.session_state[f"main_fecha_{oid}"] = op["fecha"]
@@ -494,21 +504,24 @@ def sync_op_to_state(op):
 sync_op_to_state(current_op)
 
 # ---------------------------------------------------------
-# PANEL LATERAL DE OPERACIONES
+# PANEL LATERAL DE OPERACIONES (ORDENADO)
 # ---------------------------------------------------------
 with st.sidebar:
     st.markdown("<h2 style='font-size: 20px; font-weight: 700; color: #1f2937;'>Exportaciones</h2>", unsafe_allow_html=True)
     st.caption(f"{len(st.session_state.export_operations)} operaciones activas")
     st.divider()
 
+    # Reordenar al vuelo antes de renderizar
+    st.session_state.export_operations.sort(key=get_sort_key)
+
     for op in st.session_state.export_operations:
         is_selected = op["id"] == st.session_state.current_id
         tot_sw = op["anticipo"]["swift_usd"] + op["restante"]["swift_usd"]
         pct = (tot_sw / op["importe_usd"] * 100) if op["importe_usd"] > 0 else 0.0
         
+        custom_name = op.get('nombre', f"Exportación {op['id']}")
         client_name = op['client'] or 'Sin cliente'
-        fnro = op['factura_nro'] or 'S/N'
-        btn_label = f"{client_name}\n({fnro}) — {pct:.1f}%"
+        btn_label = f"{custom_name}\n{client_name} — {pct:.1f}%"
         
         if st.button(btn_label, key=f"btn_op_{op['id']}", type="primary" if is_selected else "secondary", use_container_width=True):
             st.session_state.current_id = op["id"]
@@ -518,7 +531,9 @@ with st.sidebar:
     if st.button("+ Nueva Exportación", use_container_width=True):
         new_id = max([o["id"] for o in st.session_state.export_operations], default=0) + 1
         new_op = {
-            "id": new_id, "client": "", "factura_nro": "", "fecha": "", "kilos": 0.0, "importe_usd": 0.0, "tc_factura": 0.0,
+            "id": new_id,
+            "nombre": f"{new_id} - PI{new_id:08d}",
+            "client": "", "factura_nro": "", "fecha": "", "kilos": 0.0, "importe_usd": 0.0, "tc_factura": 0.0,
             "anticipo": {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0},
             "restante": {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0}
         }
@@ -537,7 +552,8 @@ is_closed = (pct_now >= 99.9)
 
 head_col1, head_col2, head_col3 = st.columns([3, 1, 1])
 with head_col1:
-    st.markdown(f"<h2 style='font-size: 24px; font-weight: 700; margin-bottom: 4px;'>{op_id} - PI{current_op['factura_nro'].split('-')[-1] if '-' in current_op['factura_nro'] else '0000'} ({current_op['client'].split(' ')[0] or 'Cliente'}) {' <span class=\"status-badge-success\">CERRADA</span>' if is_closed else ' <span class=\"status-badge-warning\">EN PROCESO</span>'}</h2>", unsafe_allow_html=True)
+    display_title = current_op.get('nombre', f"{op_id}")
+    st.markdown(f"<h2 style='font-size: 24px; font-weight: 700; margin-bottom: 4px;'>{display_title} ({current_op['client'].split(' ')[0] or 'Cliente'}) {' <span class=\"status-badge-success\">CERRADA</span>' if is_closed else ' <span class=\"status-badge-warning\">EN PROCESO</span>'}</h2>", unsafe_allow_html=True)
     st.caption(f"Guardado automático · {current_op['client'] or 'Sin Cliente Seleccionado'}")
 
 with head_col2:
@@ -557,6 +573,9 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ---------------------------------------------------------
 st.markdown("<div class='g-card'>", unsafe_allow_html=True)
 st.markdown("<h3 style='font-size: 16px; font-weight: 700; color: #3c4043; margin-bottom: 16px;'>Datos de la Factura E</h3>", unsafe_allow_html=True)
+
+f_row0_1, f_row0_2 = st.columns([2, 2])
+current_op["nombre"] = f_row0_1.text_input("Nombre / N° de Exportación (Panel Lateral)", key=f"main_nombre_{op_id}")
 
 f_row1_1, f_row1_2, f_row1_3, f_row1_4 = st.columns(4)
 current_op["client"] = f_row1_1.text_input("Cliente", key=f"main_client_{op_id}")
