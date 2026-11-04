@@ -52,7 +52,7 @@ if "current_id" not in st.session_state:
     st.session_state.current_id = st.session_state.export_operations[0]["id"]
 
 # ---------------------------------------------------------
-# PARSERS DE PDF ENRIQUECIDOS
+# PARSERS DE PDF
 # ---------------------------------------------------------
 def parse_num(val_str):
     if not val_str:
@@ -108,7 +108,6 @@ def extract_swift(file):
         text = " ".join([page.extract_text() or "" for page in pdf.pages])
         clean = re.sub(r'\s+', ' ', text)
         
-        # Búsqueda de importe en SWIFT (32B, 33B, Cobro, USD)
         m_swift = re.search(r'([0-9\.,]+)\s+Cobro\s+(?:Anticipado|definitivo|saldo|Restante)', clean, re.I) or \
                   re.search(r'Importe\s+instruido[^0-9]*([0-9\.,]+)', clean, re.I) or \
                   re.search(r'Monto\s+operaci[oó]n[^0-9]*([0-9\.,]+)', clean, re.I) or \
@@ -117,7 +116,6 @@ def extract_swift(file):
         if m_swift:
             res['swift_usd'] = parse_num(m_swift.group(1))
 
-        # Gastos SWIFT
         m_gasto = re.search(r'Gastos\s+de\s+transacci[oó]n[^\d]*([0-9\.,]+)', clean, re.I) or \
                   re.search(r'Gasto\s+swift[^\d]*([0-9\.,]+)', clean, re.I) or \
                   re.search(r'portador\s+de\s+los\s+gastos\s*:\s*([0-9\.,]+)', clean, re.I) or \
@@ -132,14 +130,12 @@ def extract_aviso(file):
         text = " ".join([page.extract_text() or "" for page in pdf.pages])
         clean = re.sub(r'\s+', ' ', text)
         
-        # Fecha
         f_match = re.search(r'Fecha\s+(?:reporte|operaci[oó]n|liquidaci[oó]n|cierre):?\s*([0-9/]{8,10})', clean, re.I) or \
                   re.search(r'FECHA:?\s*([0-9/]{8,10})', clean, re.I) or \
                   re.search(r'([0-9]{2}/[0-9]{2}/[0-9]{4})', clean)
         if f_match:
             res['fecha'] = f_match.group(1)
 
-        # Importe Acreditado en Pesos
         acred_match = re.search(r'Importe\s+acreditado[^\d]*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})', clean, re.I) or \
                       re.search(r'Liquidado\s+en\s+Cta[^\d]*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})', clean, re.I) or \
                       re.search(r'Neto\s+Acreditado[^\d]*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})', clean, re.I) or \
@@ -147,7 +143,6 @@ def extract_aviso(file):
         if acred_match:
             res['acreditado'] = parse_num(acred_match.group(1))
 
-        # T.C. Liquidación
         matches_tc = re.finditer(r'(?:TIPO\s+CAMBIO|T\.C\.|CAMBIO|COTIZACI[OÓ]N)[^0-9]*([0-9]{3,4}(?:[\.,][0-9]{1,2})?)', clean, re.I)
         for mt in matches_tc:
             val = parse_num(mt.group(1))
@@ -155,7 +150,6 @@ def extract_aviso(file):
                 res['tc_liq'] = val
                 break
 
-        # Comisión / RG 2408 / IVA 21%
         com_match = re.search(r'COMISION[^\$]*?USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I) or \
                     re.search(r'COMISION[^0-9]*([0-9\.,]+)', clean, re.I)
         if com_match:
@@ -172,6 +166,50 @@ def extract_aviso(file):
             res['iva'] = parse_num(iva_match.group(1))
 
     return res
+
+# ---------------------------------------------------------
+# CALLBACKS DE CARGA DE ARCHIVOS (SE EJECUTAN ANTES DE DIBUJAR WIDGETS)
+# ---------------------------------------------------------
+def process_pdf_factura(key_name, op_id):
+    file = st.session_state.get(f"uploader_fac_{key_name}_{op_id}")
+    if file:
+        data = extract_factura_e(file)
+        op = next((o for o in st.session_state.export_operations if o["id"] == op_id), None)
+        if op:
+            op.update(data)
+            if "client" in data: st.session_state[f"main_client_{op_id}"] = data["client"]
+            if "factura_nro" in data: st.session_state[f"main_fnro_{op_id}"] = data["factura_nro"]
+            if "fecha" in data: st.session_state[f"main_fecha_{op_id}"] = data["fecha"]
+            if "kilos" in data: st.session_state[f"main_kg_{op_id}"] = float(data["kilos"])
+            if "importe_usd" in data: st.session_state[f"main_imp_{op_id}"] = float(data["importe_usd"])
+            if "tc_factura" in data: st.session_state[f"main_tc_{op_id}"] = float(data["tc_factura"])
+            save_data()
+
+def process_pdf_swift(key_name, op_id):
+    file = st.session_state.get(f"uploader_swift_{key_name}_{op_id}")
+    if file:
+        data = extract_swift(file)
+        op = next((o for o in st.session_state.export_operations if o["id"] == op_id), None)
+        if op:
+            op[key_name].update(data)
+            if "swift_usd" in data: st.session_state[f"sw_{key_name}_{op_id}"] = float(data["swift_usd"])
+            if "gasto_swift" in data: st.session_state[f"gw_{key_name}_{op_id}"] = float(data["gasto_swift"])
+            save_data()
+
+def process_pdf_aviso(key_name, op_id):
+    file = st.session_state.get(f"uploader_aviso_{key_name}_{op_id}")
+    if file:
+        data = extract_aviso(file)
+        op = next((o for o in st.session_state.export_operations if o["id"] == op_id), None)
+        if op:
+            op[key_name].update(data)
+            if "fecha" in data: st.session_state[f"f_{key_name}_{op_id}"] = data["fecha"]
+            if "tc_liq" in data: st.session_state[f"tc_{key_name}_{op_id}"] = float(data["tc_liq"])
+            if "comision" in data: st.session_state[f"cm_{key_name}_{op_id}"] = float(data["comision"])
+            if "rg" in data: st.session_state[f"rg_{key_name}_{op_id}"] = float(data["rg"])
+            if "iva" in data: st.session_state[f"iva_{key_name}_{op_id}"] = float(data["iva"])
+            if "acreditado" in data: st.session_state[f"ac_{key_name}_{op_id}"] = float(data["acreditado"])
+            save_data()
 
 # ---------------------------------------------------------
 # GENERADOR DE REPORTES PDF
@@ -199,12 +237,37 @@ def generate_pdf_report(op):
     return bytes(pdf.output())
 
 # ---------------------------------------------------------
-# INTERFAZ DE USUARIO (STREAMLIT)
+# SINCRONIZACIÓN INICIAL DE SESSION STATE
 # ---------------------------------------------------------
 current_op = next((op for op in st.session_state.export_operations if op["id"] == st.session_state.current_id), None)
 if not current_op:
     current_op = st.session_state.export_operations[0]
     st.session_state.current_id = current_op["id"]
+
+op_id = current_op["id"]
+
+def sync_op_to_state(op):
+    oid = op["id"]
+    if f"main_client_{oid}" not in st.session_state:
+        st.session_state[f"main_client_{oid}"] = op["client"]
+        st.session_state[f"main_fnro_{oid}"] = op["factura_nro"]
+        st.session_state[f"main_fecha_{oid}"] = op["fecha"]
+        st.session_state[f"main_kg_{oid}"] = float(op["kilos"])
+        st.session_state[f"main_imp_{oid}"] = float(op["importe_usd"])
+        st.session_state[f"main_tc_{oid}"] = float(op["tc_factura"])
+
+        for key_name in ["anticipo", "restante"]:
+            sub = op[key_name]
+            st.session_state[f"f_{key_name}_{oid}"] = sub["fecha"]
+            st.session_state[f"sw_{key_name}_{oid}"] = float(sub["swift_usd"])
+            st.session_state[f"gw_{key_name}_{oid}"] = float(sub["gasto_swift"])
+            st.session_state[f"tc_{key_name}_{oid}"] = float(sub["tc_liq"])
+            st.session_state[f"cm_{key_name}_{oid}"] = float(sub["comision"])
+            st.session_state[f"rg_{key_name}_{oid}"] = float(sub["rg"])
+            st.session_state[f"iva_{key_name}_{oid}"] = float(sub["iva"])
+            st.session_state[f"ac_{key_name}_{oid}"] = float(sub["acreditado"])
+
+sync_op_to_state(current_op)
 
 # PANEL IZQUIERDO
 with st.sidebar:
@@ -221,12 +284,14 @@ with st.sidebar:
     st.divider()
     if st.button("+ Nueva Exportación", use_container_width=True):
         new_id = max([o["id"] for o in st.session_state.export_operations], default=0) + 1
-        st.session_state.export_operations.append({
+        new_op = {
             "id": new_id, "client": "", "factura_nro": "", "fecha": "", "kilos": 0.0, "importe_usd": 0.0, "tc_factura": 0.0,
             "anticipo": {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0},
             "restante": {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0}
-        })
+        }
+        st.session_state.export_operations.append(new_op)
         st.session_state.current_id = new_id
+        sync_op_to_state(new_op)
         save_data()
         st.rerun()
 
@@ -234,7 +299,7 @@ with st.sidebar:
 col_t1, col_t2 = st.columns([3, 1])
 with col_t1:
     st.title("Conciliación de Exportación")
-    st.caption(f"Factura: {current_op['factura_nro'] or 'S/N'} — Cliente: {current_op['client'] or 'Sin cliente'}")
+    st.caption(f"Factura: {st.session_state[f'main_fnro_{op_id}'] or 'S/N'} — Cliente: {st.session_state[f'main_client_{op_id}'] or 'Sin cliente'}")
 
 with col_t2:
     if st.button("💾 Guardar Cambios", use_container_width=True, type="primary"):
@@ -245,90 +310,34 @@ with col_t2:
 st.subheader("Factura E")
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 
-# Sincronización de inputs principales
-current_op["client"] = c1.text_input("Cliente", value=current_op["client"], key=f"main_client_{current_op['id']}")
-current_op["factura_nro"] = c2.text_input("N° Factura E", value=current_op["factura_nro"], key=f"main_fnro_{current_op['id']}")
-current_op["fecha"] = c3.text_input("Fecha", value=current_op["fecha"], key=f"main_fecha_{current_op['id']}")
-current_op["kilos"] = c4.number_input("Kg Producto", value=float(current_op["kilos"]), format="%.2f", key=f"main_kg_{current_op['id']}")
-current_op["importe_usd"] = c5.number_input("Importe USD", value=float(current_op["importe_usd"]), format="%.2f", key=f"main_imp_{current_op['id']}")
-current_op["tc_factura"] = c6.number_input("T.C. Factura", value=float(current_op["tc_factura"]), format="%.2f", key=f"main_tc_{current_op['id']}")
+current_op["client"] = c1.text_input("Cliente", key=f"main_client_{op_id}")
+current_op["factura_nro"] = c2.text_input("N° Factura E", key=f"main_fnro_{op_id}")
+current_op["fecha"] = c3.text_input("Fecha", key=f"main_fecha_{op_id}")
+current_op["kilos"] = c4.number_input("Kg Producto", format="%.2f", key=f"main_kg_{op_id}")
+current_op["importe_usd"] = c5.number_input("Importe USD", format="%.2f", key=f"main_imp_{op_id}")
+current_op["tc_factura"] = c6.number_input("T.C. Factura", format="%.2f", key=f"main_tc_{op_id}")
 
-# SECCIONES ANTICIPO Y RESTANTE CON ACTUALIZACIÓN DIRECTA DE SESSION STATE
+# SECCIONES ANTICIPO Y RESTANTE
 def render_section(title, key_name):
     st.subheader(title)
     sub_data = current_op[key_name]
-    op_id = current_op['id']
     
-    # Carga de PDFs
+    # Carga de PDFs con Callbacks on_change
     f1, f2, f3 = st.columns(3)
-    pdf_fac = f1.file_uploader(f"Factura E ({title})", type=["pdf"], key=f"fac_{key_name}_{op_id}")
-    pdf_swift = f2.file_uploader(f"SWIFT ({title})", type=["pdf"], key=f"swift_{key_name}_{op_id}")
-    pdf_aviso = f3.file_uploader(f"Aviso Crédito ({title})", type=["pdf"], key=f"aviso_{key_name}_{op_id}")
+    f1.file_uploader(f"Factura E ({title})", type=["pdf"], key=f"uploader_fac_{key_name}_{op_id}", on_change=process_pdf_factura, args=(key_name, op_id))
+    f2.file_uploader(f"SWIFT ({title})", type=["pdf"], key=f"uploader_swift_{key_name}_{op_id}", on_change=process_pdf_swift, args=(key_name, op_id))
+    f3.file_uploader(f"Aviso Crédito ({title})", type=["pdf"], key=f"uploader_aviso_{key_name}_{op_id}", on_change=process_pdf_aviso, args=(key_name, op_id))
 
-    # Mapeo de claves para actualizar la pantalla al instante
-    field_key_map = {
-        'fecha': f"f_{key_name}_{op_id}",
-        'swift_usd': f"sw_{key_name}_{op_id}",
-        'gasto_swift': f"gw_{key_name}_{op_id}",
-        'tc_liq': f"tc_{key_name}_{op_id}",
-        'comision': f"cm_{key_name}_{op_id}",
-        'rg': f"rg_{key_name}_{op_id}",
-        'iva': f"iva_{key_name}_{op_id}",
-        'acreditado': f"ac_{key_name}_{op_id}"
-    }
-
-    # Procesar Factura E
-    if pdf_fac:
-        f_proc_key = f"proc_fac_{key_name}_{op_id}_{pdf_fac.name}_{pdf_fac.size}"
-        if not st.session_state.get(f_proc_key):
-            ext = extract_factura_e(pdf_fac)
-            current_op.update(ext)
-            st.session_state[f"main_client_{op_id}"] = current_op["client"]
-            st.session_state[f"main_fnro_{op_id}"] = current_op["factura_nro"]
-            st.session_state[f"main_fecha_{op_id}"] = current_op["fecha"]
-            st.session_state[f"main_kg_{op_id}"] = float(current_op["kilos"])
-            st.session_state[f"main_imp_{op_id}"] = float(current_op["importe_usd"])
-            st.session_state[f"main_tc_{op_id}"] = float(current_op["tc_factura"])
-            st.session_state[f_proc_key] = True
-            save_data()
-            st.rerun()
-
-    # Procesar SWIFT
-    if pdf_swift:
-        s_proc_key = f"proc_swift_{key_name}_{op_id}_{pdf_swift.name}_{pdf_swift.size}"
-        if not st.session_state.get(s_proc_key):
-            ext = extract_swift(pdf_swift)
-            for k, v in ext.items():
-                sub_data[k] = v
-                if k in field_key_map:
-                    st.session_state[field_key_map[k]] = float(v) if isinstance(v, (int, float)) else str(v)
-            st.session_state[s_proc_key] = True
-            save_data()
-            st.rerun()
-
-    # Procesar Aviso de Crédito
-    if pdf_aviso:
-        a_proc_key = f"proc_aviso_{key_name}_{op_id}_{pdf_aviso.name}_{pdf_aviso.size}"
-        if not st.session_state.get(a_proc_key):
-            ext = extract_aviso(pdf_aviso)
-            for k, v in ext.items():
-                sub_data[k] = v
-                if k in field_key_map:
-                    st.session_state[field_key_map[k]] = float(v) if isinstance(v, (int, float)) else str(v)
-            st.session_state[a_proc_key] = True
-            save_data()
-            st.rerun()
-
-    # Renderizado de Inputs Editables
+    # Inputs Editables vinculados directamente a session_state
     col_a, col_b, col_c, col_d, col_e, col_f, col_g, col_h = st.columns(8)
-    sub_data["fecha"] = col_a.text_input("Fecha Acred.", value=sub_data["fecha"], key=field_key_map['fecha'])
-    sub_data["swift_usd"] = col_b.number_input("Swift USD", value=float(sub_data["swift_usd"]), format="%.2f", key=field_key_map['swift_usd'])
-    sub_data["gasto_swift"] = col_c.number_input("Gasto Swift USD", value=float(sub_data["gasto_swift"]), format="%.2f", key=field_key_map['gasto_swift'])
-    sub_data["tc_liq"] = col_d.number_input("T.C. Liq.", value=float(sub_data["tc_liq"]), format="%.2f", key=field_key_map['tc_liq'])
-    sub_data["comision"] = col_e.number_input("Comisión $", value=float(sub_data["comision"]), format="%.2f", key=field_key_map['comision'])
-    sub_data["rg"] = col_f.number_input("RG 2408 $", value=float(sub_data["rg"]), format="%.2f", key=field_key_map['rg'])
-    sub_data["iva"] = col_g.number_input("IVA 21% $", value=float(sub_data["iva"]), format="%.2f", key=field_key_map['iva'])
-    sub_data["acreditado"] = col_h.number_input("Acreditado $", value=float(sub_data["acreditado"]), format="%.2f", key=field_key_map['acreditado'])
+    sub_data["fecha"] = col_a.text_input("Fecha Acred.", key=f"f_{key_name}_{op_id}")
+    sub_data["swift_usd"] = col_b.number_input("Swift USD", format="%.2f", key=f"sw_{key_name}_{op_id}")
+    sub_data["gasto_swift"] = col_c.number_input("Gasto Swift USD", format="%.2f", key=f"gw_{key_name}_{op_id}")
+    sub_data["tc_liq"] = col_d.number_input("T.C. Liq.", format="%.2f", key=f"tc_{key_name}_{op_id}")
+    sub_data["comision"] = col_e.number_input("Comisión $", format="%.2f", key=f"cm_{key_name}_{op_id}")
+    sub_data["rg"] = col_f.number_input("RG 2408 $", format="%.2f", key=f"rg_{key_name}_{op_id}")
+    sub_data["iva"] = col_g.number_input("IVA 21% $", format="%.2f", key=f"iva_{key_name}_{op_id}")
+    sub_data["acreditado"] = col_h.number_input("Acreditado $", format="%.2f", key=f"ac_{key_name}_{op_id}")
 
 render_section("Anticipo", "anticipo")
 render_section("Restante", "restante")
