@@ -12,26 +12,19 @@ st.set_page_config(page_title="Conciliación de Exportación", layout="wide", in
 
 st.markdown("""
     <style>
-    /* Estilo Global Google Sites / Material Modern */
     .stApp {
         background-color: #f8f9fa;
         font-family: 'Google Sans', 'Inter', -apple-system, sans-serif;
     }
-    
-    /* Panel Lateral Sidebar */
     section[data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e0e3e7 !important;
     }
-    
-    /* Botones estilo Google */
     .stButton>button {
         border-radius: 20px !important;
         font-weight: 500 !important;
         transition: all 0.2s ease !important;
     }
-    
-    /* Tarjetas redondeadas Google Sites */
     .g-card {
         background: #ffffff;
         border-radius: 16px;
@@ -40,8 +33,6 @@ st.markdown("""
         border: 1px solid #e3e8ef;
         box-shadow: 0 1px 3px rgba(60,64,67,0.08);
     }
-    
-    /* Estilizado de inputs */
     div[data-baseweb="input"] {
         border-radius: 10px !important;
     }
@@ -165,43 +156,53 @@ def extract_aviso(file):
         clean = re.sub(r'\s+', ' ', text)
         
         # Fecha
-        f_match = re.search(r'Fecha\s+(?:reporte|operaci[oó]n|liquidaci[oó]n|cierre|acred|emisi[oó]n)?:?\s*([0-9]{2}/[0-9]{2}/[0-9]{2,4})', clean, re.I) or \
-                  re.search(r'FECHA:?\s*([0-9]{2}/[0-9]{2}/[0-9]{2,4})', clean, re.I) or \
+        f_match = re.search(r'FECHA:?\s*([0-9]{2}/[0-9]{2}/[0-9]{4})', clean, re.I) or \
+                  re.search(r'Fecha\s+reporte:?\s*([0-9]{2}/[0-9]{2}/[0-9]{2,4})', clean, re.I) or \
                   re.search(r'([0-9]{2}/[0-9]{2}/[0-9]{4})', clean)
         if f_match:
             res['fecha'] = f_match.group(1)
 
-        # PARSING MEJORADO DE T.C. LIQUIDACIÓN
+        # T.C. LIQUIDACIÓN (Optimizado para modelo Santander)
+        # Santander format: "SUBTOTAL POR TRANSF USD <Monto> <T.C.> <Equiv>" o "USD <Monto> <T.C.> <Equiv>"
         tc_found = False
-        tc_patterns = [
-            r'(?:TIPO\s+DE?\s+CAMBIO|T\.C\.|COTIZACI[OÓ]N|CAMBIO|T/C)\s*[:\$=]?\s*\b([0-9]{1,2}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,4}(?:,[0-9]{1,4})?)\b',
-            r'USD\s*[:\$=]?\s*\b([0-9]{1,2}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,4},[0-9]{2})\b'
-        ]
         
-        for pat in tc_patterns:
-            matches = re.finditer(pat, clean, re.I)
-            for mt in matches:
-                val = parse_num(mt.group(1))
-                if 500 <= val <= 4000:
-                    res['tc_liq'] = val
-                    tc_found = True
-                    break
-            if tc_found:
-                break
+        santander_tc = re.search(r'USD\s+[0-9\.,]+\s+([0-9]{3,4}(?:[\.,][0-9]{1,2})?)\s+[0-9\.,]+', clean, re.I)
+        if santander_tc:
+            val = parse_num(santander_tc.group(1))
+            if 500 <= val <= 5000:
+                res['tc_liq'] = val
+                tc_found = True
 
         if not tc_found:
-            # Búsqueda estricta de formato ARS para cotizaciones (ej. 1.371,00 o 1438,00)
-            all_candidates = re.findall(r'\b([1-9]\.[0-9]{3},[0-9]{2}|[5-9][0-9]{2},[0-9]{2}|1[0-9]{3},[0-9]{2})\b', clean)
+            tc_patterns = [
+                r'(?:TIPO\s+DE?\s+CAMBIO|T\.C\.|COTIZACI[OÓ]N|CAMBIO|T/C)\s*[:\$=]?\s*\b([0-9]{1,2}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,4}(?:[\.,][0-9]{1,4})?)\b',
+                r'USD\s*[:\$=]?\s*\b([0-9]{1,2}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{3,4},[0-9]{2})\b'
+            ]
+            for pat in tc_patterns:
+                matches = re.finditer(pat, clean, re.I)
+                for mt in matches:
+                    val = parse_num(mt.group(1))
+                    if 500 <= val <= 5000:
+                        res['tc_liq'] = val
+                        tc_found = True
+                        break
+                if tc_found:
+                    break
+
+        if not tc_found:
+            all_candidates = re.findall(r'\b([1-9]\.[0-9]{3},[0-9]{2}|[5-9][0-9]{2},[0-9]{2}|1[0-9]{3}(?:[\.,][0-9]{1,2})?)\b', clean)
             for cand in all_candidates:
                 val = parse_num(cand)
-                if 500 <= val <= 4000:
+                if 500 <= val <= 5000:
                     res['tc_liq'] = val
                     break
 
-        # Importe Acreditado en Pesos
-        acred_match = re.search(r'(?:Importe\s+acreditado|Liquidado\s+en\s+Cta|Neto\s+Acreditado|Total\s+Acreditado|ACREDITAR|IMPORTE\s+NETO)[^\d]*\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})\b', clean, re.I)
+        # Importe Acreditado en Pesos (Santander "total 30263708.8" o "134087379.06")
+        acred_match = re.search(r'(?:Importe\s+acreditado|Liquidado\s+en\s+Cta|Neto\s+Acreditado|Total\s+Acreditado|total|EFECTIVAMENTE\s+COBRADO)[^\d]*\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{7,11}(?:[\.,][0-9]{1,2})?)\b', clean, re.I)
         if acred_match:
-            res['acreditado'] = parse_num(acred_match.group(1))
+            val_acred = parse_num(acred_match.group(1))
+            if val_acred > 10000:
+                res['acreditado'] = val_acred
 
         # Comisión / RG 2408 / IVA 21%
         com_match = re.search(r'COMISION[^\$]*?USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I) or \
@@ -279,6 +280,47 @@ def process_pdf_aviso(key_name, op_id):
             save_data()
 
 # ---------------------------------------------------------
+# FUNCION PARA LIMPIAR DATOS DE LA OPERACION ACTIVA
+# ---------------------------------------------------------
+def clear_current_operation():
+    oid = st.session_state.current_id
+    op = next((o for o in st.session_state.export_operations if o["id"] == oid), None)
+    if op:
+        op["client"] = ""
+        op["factura_nro"] = ""
+        op["fecha"] = ""
+        op["kilos"] = 0.0
+        op["importe_usd"] = 0.0
+        op["tc_factura"] = 0.0
+        op["anticipo"] = {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0}
+        op["restante"] = {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0}
+        
+        st.session_state[f"main_client_{oid}"] = ""
+        st.session_state[f"main_fnro_{oid}"] = ""
+        st.session_state[f"main_fecha_{oid}"] = ""
+        st.session_state[f"main_kg_{oid}"] = 0.0
+        st.session_state[f"main_imp_{oid}"] = 0.0
+        st.session_state[f"main_tc_{oid}"] = 0.0
+        
+        for key_name in ["anticipo", "restante"]:
+            st.session_state[f"f_{key_name}_{oid}"] = ""
+            st.session_state[f"sw_{key_name}_{oid}"] = 0.0
+            st.session_state[f"gw_{key_name}_{oid}"] = 0.0
+            st.session_state[f"tc_{key_name}_{oid}"] = 0.0
+            st.session_state[f"cm_{key_name}_{oid}"] = 0.0
+            st.session_state[f"rg_{key_name}_{oid}"] = 0.0
+            st.session_state[f"iva_{key_name}_{oid}"] = 0.0
+            st.session_state[f"ac_{key_name}_{oid}"] = 0.0
+            
+            for up_type in ["fac", "swift", "aviso"]:
+                up_key = f"uploader_{up_type}_{key_name}_{oid}"
+                if up_key in st.session_state:
+                    del st.session_state[up_key]
+        
+        save_data()
+        st.toast("Datos y archivos limpiados correctamente", icon="🧹")
+
+# ---------------------------------------------------------
 # GENERADOR DE REPORTES PDF
 # ---------------------------------------------------------
 def generate_pdf_report(op):
@@ -297,7 +339,7 @@ def generate_pdf_report(op):
         pdf.cell(0, 8, parte_name, ln=True)
         pdf.set_font("Helvetica", "", 10)
         pdf.cell(0, 6, f"  Swift: USD {p['swift_usd']:,.2f} | Gasto Swift: USD {p['gasto_swift']:,.2f}", ln=True)
-        pdf.cell(0, 6, f"  T.C. Liquidação: ${p['tc_liq']:,.2f} | Acreditado: ${p['acreditado']:,.2f}", ln=True)
+        pdf.cell(0, 6, f"  T.C. Liquidacion: ${p['tc_liq']:,.2f} | Acreditado: ${p['acreditado']:,.2f}", ln=True)
         pdf.cell(0, 6, f"  Comision: ${p['comision']:,.2f} | RG 2408: ${p['rg']:,.2f} | IVA: ${p['iva']:,.2f}", ln=True)
         pdf.ln(3)
 
@@ -347,7 +389,6 @@ with st.sidebar:
     for op in st.session_state.export_operations:
         is_selected = op["id"] == st.session_state.current_id
         
-        # Cálculo dinámico del % de pago cobrado
         tot_sw = op["anticipo"]["swift_usd"] + op["restante"]["swift_usd"]
         pct = (tot_sw / op["importe_usd"] * 100) if op["importe_usd"] > 0 else 0.0
         
@@ -377,12 +418,17 @@ with st.sidebar:
 # ---------------------------------------------------------
 # CONTENIDO PRINCIPAL EN TARJETAS ESTILO GOOGLE SITES
 # ---------------------------------------------------------
-col_t1, col_t2 = st.columns([3, 1])
+col_t1, col_t2, col_t3 = st.columns([2.5, 1, 1])
 with col_t1:
     st.markdown(f"<h1 style='font-size: 28px; font-weight: 700; color: #1a73e8; margin-bottom: 0;'>Conciliación de Exportación</h1>", unsafe_allow_html=True)
     st.caption(f"Factura: {st.session_state[f'main_fnro_{op_id}'] or 'S/N'} — Cliente: {st.session_state[f'main_client_{op_id}'] or 'Sin cliente'}")
 
 with col_t2:
+    if st.button("🧹 Limpiar Datos", use_container_width=True, type="secondary"):
+        clear_current_operation()
+        st.rerun()
+
+with col_t3:
     if st.button("💾 Guardar Cambios", use_container_width=True, type="primary"):
         save_data()
         st.toast("¡Datos guardados con éxito!", icon="✅")
@@ -425,7 +471,6 @@ def render_section(title, key_name):
     sub_data["rg"] = col_f.number_input("RG 2408 $", format="%.2f", key=f"rg_{key_name}_{op_id}")
     sub_data["iva"] = col_g.number_input("IVA 21% $", format="%.2f", key=f"iva_{key_name}_{op_id}")
     
-    # Autocálculo de acreditado en UI
     if sub_data["acreditado"] == 0 and sub_data["tc_liq"] > 0 and sub_data["swift_usd"] > 0:
         sub_data["acreditado"] = max(0.0, (sub_data["swift_usd"] - sub_data["gasto_swift"]) * sub_data["tc_liq"] - sub_data["comision"] - sub_data["rg"] - sub_data["iva"])
         st.session_state[f"ac_{key_name}_{op_id}"] = float(sub_data["acreditado"])
@@ -438,28 +483,31 @@ render_section("Restante", "restante")
 
 save_data()
 
-# MÉTRICAS Y RESULTADOS FINANCIEROS
+# ---------------------------------------------------------
+# MÉTRICAS Y RESULTADOS FINANCIEROS (DETALLADOS)
+# ---------------------------------------------------------
 ant = current_op["anticipo"]
 res = current_op["restante"]
 
 neto_usd_ant = ant["swift_usd"] - ant["gasto_swift"]
 neto_usd_res = res["swift_usd"] - res["gasto_swift"]
 
-result_fin_ant = neto_usd_ant * (ant["tc_liq"] - current_op["tc_factura"]) if current_op["tc_factura"] > 0 else 0.0
-result_fin_res = neto_usd_res * (res["tc_liq"] - current_op["tc_factura"]) if current_op["tc_factura"] > 0 else 0.0
+result_fin_ant = neto_usd_ant * (ant["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and ant["tc_liq"] > 0) else 0.0
+result_fin_res = neto_usd_res * (res["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and res["tc_liq"] > 0) else 0.0
 total_result_fin = result_fin_ant + result_fin_res
 
 st.markdown("<div class='g-card'>", unsafe_allow_html=True)
 st.markdown("<h3 style='font-size: 16px; font-weight: 700; color: #3c4043; margin-bottom: 16px;'>Resumen Financiero</h3>", unsafe_allow_html=True)
 
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3, m4, m5 = st.columns(5)
 total_swift = ant["swift_usd"] + res["swift_usd"]
 pct_cobrado = (total_swift / current_op["importe_usd"] * 100) if current_op["importe_usd"] > 0 else 0.0
 
 m1.metric("% Cobrado", f"{pct_cobrado:.2f}%")
 m2.metric("Saldo Pendiente USD", f"US$ {max(0.0, current_op['importe_usd'] - total_swift):,.2f}")
-m3.metric("Resultado Financiero", f"$ {total_result_fin:,.2f}", delta=f"{total_result_fin:,.2f}")
-m4.metric("Total Acreditado $", f"$ {(ant['acreditado'] + res['acreditado']):,.2f}")
+m3.metric("Res. Fin. Anticipo", f"$ {result_fin_ant:,.2f}", delta=f"{result_fin_ant:,.2f}")
+m4.metric("Res. Fin. Restante", f"$ {result_fin_res:,.2f}", delta=f"{result_fin_res:,.2f}")
+m5.metric("Res. Finan. Total", f"$ {total_result_fin:,.2f}", delta=f"{total_result_fin:,.2f}")
 st.markdown("</div>", unsafe_allow_html=True)
 
 # EXPORTACIÓN EN PDF
