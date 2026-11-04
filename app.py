@@ -1,121 +1,327 @@
 import streamlit as st
 import pdfplumber
+import json
 import re
-import pandas as pd
+import os
+from fpdf import FPDF
 
-st.set_page_config(page_title="Liquidación de Exportación", layout="wide")
+# ---------------------------------------------------------
+# CONFIGURACIÓN DE PÁGINA Y ESTILO MEJORADO
+# ---------------------------------------------------------
+st.set_page_config(page_title="Conciliación de Exportación", layout="wide", initial_sidebar_state="expanded")
 
-def extraer_datos_factura(pdf_file):
-    datos = {
-        "cliente": "",
-        "numero_factura": "",
+st.markdown("""
+    <style>
+    .main { background-color: #f8fafc; }
+    .stCard { bg-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+    .metric-card { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; text-align: center; }
+    .metric-label { font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; }
+    .metric-value { font-size: 18px; font-weight: 700; color: #0f172a; margin-top: 4px; }
+    .status-ok { color: #16a34a; font-weight: 600; font-size: 12px; }
+    </style>
+""", unsafe_allow_html=True)
+
+DATA_FILE = "export_operations.json"
+
+# ---------------------------------------------------------
+# PERSISTENCIA EN DISCO (JSON)
+# ---------------------------------------------------------
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return [{
+        "id": 1,
+        "client": "",
+        "factura_nro": "",
         "fecha": "",
+        "kilos": 0.0,
         "importe_usd": 0.0,
-        "tc": 0.0,
-        "kilos": 0.0
-    }
-    
+        "tc_factura": 0.0,
+        "anticipo": {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0},
+        "restante": {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0}
+    }]
+
+def save_data():
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(st.session_state.export_operations, f, ensure_ascii=False, indent=2)
+
+if "export_operations" not in st.session_state:
+    st.session_state.export_operations = load_data()
+
+if "current_id" not in st.session_state:
+    st.session_state.current_id = st.session_state.export_operations[0]["id"]
+
+# ---------------------------------------------------------
+# PARSERS INFALIBLES CON PDFPLUMBER
+# ---------------------------------------------------------
+def parse_num(val_str):
+    if not val_str:
+        return 0.0
+    cleaned = str(val_str).strip()
+    if "." in cleaned and "," in cleaned:
+        if cleaned.find(".") < cleaned.find(","):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(",", ".")
     try:
-        with pdfplumber.open(pdf_file) as pdf:
-            texto = ""
-            for page in pdf.pages:
-                texto += page.extract_text() + "\n"
-            
-            # Expresiones regulares ajustadas para Factura E de AFIP
-            match_cliente = re.search(r'Señor\(es\):\s*(.*?)\n', texto)
-            match_factura = re.search(r'Punto de Venta:\s*(\d{4,5})\s*Comp\. Nro:\s*(\d{8})', texto)
-            match_fecha = re.search(r'Fecha de Emisión:\s*(\d{2}/\d{2}/\d{4})', texto)
-            match_importe = re.search(r'Importe Total:\s*(?:USD|U\$S)?\s*([\d\.,]+)', texto)
-            match_tc = re.search(r'Tipo de Cambio:\s*([\d\.,]+)', texto)
-            
-            if match_cliente: datos["cliente"] = match_cliente.group(1).strip()
-            if match_factura: datos["numero_factura"] = f"{int(match_factura.group(1)):05d}-{int(match_factura.group(2)):08d}"
-            if match_fecha: datos["fecha"] = match_fecha.group(1)
-            if match_importe: datos["importe_usd"] = float(match_importe.group(1).replace('.', '').replace(',', '.'))
-            if match_tc: datos["tc"] = float(match_tc.group(1).replace('.', '').replace(',', '.'))
-            
-    except Exception as e:
-        st.warning(f"No se pudieron extraer todos los datos automáticamente: {e}")
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+def extract_factura_e(file):
+    res = {}
+    with pdfplumber.open(file) as pdf:
+        text = " ".join([page.extract_text() or "" for page in pdf.pages])
+        clean = re.sub(r'\s+', ' ', text)
         
-    return datos
+        # N° Factura
+        nro_match = re.search(r'Compr\.?\s*Nro[:\s]*([0-9]{4,5})\s*-\s*([0-9]{8})', clean, re.I)
+        if nro_match:
+            res['factura_nro'] = f"{nro_match.group(1)}-{nro_match.group(2)}"
+            
+        # Fecha
+        fecha_match = re.search(r'([0-9]{2}/[0-9]{2}/[0-9]{4})', clean)
+        if fecha_match:
+            res['fecha'] = fecha_match.group(1)
 
-st.title("Gestión de Cobros y Liquidación de Divisas")
+        # Cliente (Señor/es)
+        cliente_match = re.search(r'Se[ñn]or[^\:]*:\s*(.*?)(?=\s+(?:CUIT|ID\s+Impositivo|Domicilio|Divisa|Destino))', clean, re.I)
+        if cliente_match:
+            res['client'] = cliente_match.group(1).strip()
 
-st.markdown("### 1. Documentación de Exportación")
-archivo_pdf = st.file_uploader("Adjuntar Factura E (PDF)", type=["pdf"])
+        # Importe Total USD
+        total_match = re.search(r'Importe\s+Total[^0-9]*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})', clean, re.I)
+        if total_match:
+            res['importe_usd'] = parse_num(total_match.group(1))
 
-datos_por_defecto = {"cliente": "", "numero_factura": "", "fecha": "", "importe_usd": 0.0, "tc": 0.0, "kilos": 0.0}
+        # T.C. Factura
+        tc_match = re.search(r'Tipo\s+de\s+Cambio[^0-9]*([0-9]+(?:[\.,][0-9]+)?)', clean, re.I)
+        if tc_match:
+            res['tc_factura'] = parse_num(tc_match.group(1))
 
-if archivo_pdf is not None:
-    with st.spinner("Procesando documento..."):
-        datos_por_defecto = extraer_datos_factura(archivo_pdf)
+        # Kilos (busca formato con 6 decimales habitual de AFIP)
+        kg_match = re.search(r'([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{6}|[0-9]+,[0-9]{6})', clean)
+        if kg_match:
+            res['kilos'] = parse_num(kg_match.group(1))
+            
+    return res
 
-# Formulario de verificación de datos extraídos
-with st.form("datos_factura"):
-    col1, col2, col3 = st.columns(3)
-    cliente = col1.text_input("Cliente", value=datos_por_defecto["cliente"])
-    n_factura = col2.text_input("N° Factura E", value=datos_por_defecto["numero_factura"], help="Formato 00000-00000000")
-    fecha = col3.text_input("Fecha", value=datos_por_defecto["fecha"])
+def extract_swift(file):
+    res = {}
+    with pdfplumber.open(file) as pdf:
+        text = " ".join([page.extract_text() or "" for page in pdf.pages])
+        clean = re.sub(r'\s+', ' ', text)
+        
+        m_swift = re.search(r'([0-9\.,]+)\s+Cobro\s+(?:Anticipado|definitivo|saldo|Restante)', clean, re.I) or \
+                  re.search(r'Importe\s+instruido[^0-9]*([0-9\.,]+)', clean, re.I)
+        if m_swift:
+            res['swift_usd'] = parse_num(m_swift.group(1))
+
+        m_gasto = re.search(r'Gastos\s+de\s+transacci[oó]n[^\d]*([0-9\.,]+)', clean, re.I)
+        if m_gasto:
+            res['gasto_swift'] = parse_num(m_gasto.group(1))
+    return res
+
+def extract_aviso(file):
+    res = {}
+    with pdfplumber.open(file) as pdf:
+        text = " ".join([page.extract_text() or "" for page in pdf.pages])
+        clean = re.sub(r'\s+', ' ', text)
+        
+        # Fecha
+        f_match = re.search(r'Fecha\s+reporte:?\s*([0-9/]{8,10})', clean, re.I)
+        if f_match:
+            res['fecha'] = f_match.group(1)
+
+        # Importe Acreditado
+        acred_match = re.search(r'Importe\s+acreditado[^\d]*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})', clean, re.I)
+        if acred_match:
+            res['acreditado'] = parse_num(acred_match.group(1))
+
+        # T.C. Liquidación
+        tc_match = re.search(r'(?:TIPO\s+CAMBIO|T\.C\.|CAMBIO)[^0-9]*([0-9]{3,4}(?:[\.,][0-9]{1,2})?)', clean, re.I)
+        if tc_match:
+            res['tc_liq'] = parse_num(tc_match.group(1))
+
+        # Comision / RG / IVA
+        com_match = re.search(r'COMISION[^\$]*?USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I)
+        if com_match:
+            res['comision'] = parse_num(com_match.group(1))
+
+        rg_match = re.search(r'RG2408[^\$]*?USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I)
+        if rg_match:
+            res['rg'] = parse_num(rg_match.group(1))
+
+        iva_match = re.search(r'IVA\s+21%[^\$]*?USD\s+[0-9\.,]+\s+[0-9\.,]+\s+([0-9\.,]+)', clean, re.I)
+        if iva_match:
+            res['iva'] = parse_num(iva_match.group(1))
+
+    return res
+
+# ---------------------------------------------------------
+# GENERADOR DE REPORTES PDF
+# ---------------------------------------------------------
+def generate_pdf_report(op):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, f"Conciliación de Exportación - Factura {op.get('factura_nro', 'S/N')}", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 8, f"Cliente: {op.get('client', 'N/A')}", ln=True)
+    pdf.cell(0, 8, f"Fecha: {op.get('fecha', 'N/A')} | Importe: USD {op.get('importe_usd', 0):,.2f} | T.C. Factura: ${op.get('tc_factura', 0):,.2f}", ln=True)
+    pdf.ln(5)
+
+    # Detalle Anticipo y Restante
+    for parte_name, key in [("ANTICIPIOS", "anticipo"), ("RESTANTE / SALDO", "restante")]:
+        p = op[key]
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, parte_name, ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 6, f"  Swift: USD {p['swift_usd']:,.2f} | Gasto Swift: USD {p['gasto_swift']:,.2f}", ln=True)
+        pdf.cell(0, 6, f"  T.C. Liquidación: ${p['tc_liq']:,.2f} | Acreditado: ${p['acreditado']:,.2f}", ln=True)
+        pdf.cell(0, 6, f"  Comisión: ${p['comision']:,.2f} | RG 2408: ${p['rg']:,.2f} | IVA: ${p['iva']:,.2f}", ln=True)
+        pdf.ln(3)
+
+    return bytes(pdf.output())
+
+# ---------------------------------------------------------
+# INTERFAZ PRINCIPAL - STREAMLIT
+# ---------------------------------------------------------
+# Obtener operación activa
+current_op = next((op for op in st.session_state.export_operations if op["id"] == st.session_state.current_id), None)
+if not current_op:
+    current_op = st.session_state.export_operations[0]
+    st.session_state.current_id = current_op["id"]
+
+# SIDEBAR: GESTIÓN DE EXPORTACIONES
+with st.sidebar:
+    st.title("Exportaciones")
+    st.caption(f"{len(st.session_state.export_operations)} activas")
     
-    col4, col5, col6 = st.columns(3)
-    importe_total = col4.number_input("Importe total (USD)", value=datos_por_defecto["importe_usd"], step=100.0)
-    tc_factura = col5.number_input("T.C. factura", value=datos_por_defecto["tc"], format="%.4f")
-    kilos_prod = col6.number_input("Kilos de producto", value=datos_por_defecto["kilos"], step=10.0)
-    
-    confirmar_datos = st.form_submit_button("Confirmar Datos de Factura")
+    for op in st.session_state.export_operations:
+        is_selected = op["id"] == st.session_state.current_id
+        label = f"{op['client'] or 'Sin cliente'} ({op['factura_nro'] or 'S/N'})"
+        if st.button(label, key=f"btn_op_{op['id']}", type="primary" if is_selected else "secondary", use_container_width=True):
+            st.session_state.current_id = op["id"]
+            st.rerun()
 
+    st.divider()
+    if st.button("+ Nueva Exportación", use_container_width=True):
+        new_id = max([o["id"] for o in st.session_state.export_operations], default=0) + 1
+        st.session_state.export_operations.append({
+            "id": new_id, "client": "", "factura_nro": "", "fecha": "", "kilos": 0.0, "importe_usd": 0.0, "tc_factura": 0.0,
+            "anticipo": {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0},
+            "restante": {"fecha": "", "swift_usd": 0.0, "gasto_swift": 0.0, "tc_liq": 0.0, "comision": 0.0, "rg": 0.0, "iva": 0.0, "acreditado": 0.0}
+        })
+        st.session_state.current_id = new_id
+        save_data()
+        st.rerun()
+
+# TITULO Y BOTONES DE ACCION
+col_t1, col_t2 = st.columns([3, 1])
+with col_t1:
+    st.title("Conciliación de Exportación")
+    st.caption(f"Factura: {current_op['factura_nro'] or 'S/N'} — Cliente: {current_op['client'] or 'Sin cliente'}")
+
+with col_t2:
+    if st.button("💾 Guardar Cambios", use_container_width=True, type="primary"):
+        save_data()
+        st.toast("¡Datos guardados con éxito!", icon="✅")
+
+# ---------------------------------------------------------
+# FORMULARIO PRINCIPAL: FACTURA E
+# ---------------------------------------------------------
+st.subheader("Factura E")
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+current_op["client"] = c1.text_input("Cliente", current_op["client"])
+current_op["factura_nro"] = c2.text_input("N° Factura E", current_op["factura_nro"])
+current_op["fecha"] = c3.text_input("Fecha", current_op["fecha"])
+current_op["kilos"] = c4.number_input("Kg Producto", value=float(current_op["kilos"]), format="%.2f")
+current_op["importe_usd"] = c5.number_input("Importe USD", value=float(current_op["importe_usd"]), format="%.2f")
+current_op["tc_factura"] = c6.number_input("T.C. Factura", value=float(current_op["tc_factura"]), format="%.2f")
+
+# ---------------------------------------------------------
+# SECCIONES ANTICIPO Y RESTANTE
+# ---------------------------------------------------------
+def render_section(title, key_name):
+    st.subheader(title)
+    sub_data = current_op[key_name]
+    
+    # Carga de PDFs
+    f1, f2, f3 = st.columns(3)
+    pdf_fac = f1.file_uploader(f"Factura E ({title})", type=["pdf"], key=f"fac_{key_name}_{current_op['id']}")
+    pdf_swift = f2.file_uploader(f"SWIFT ({title})", type=["pdf"], key=f"swift_{key_name}_{current_op['id']}")
+    pdf_aviso = f3.file_uploader(f"Aviso Crédito ({title})", type=["pdf"], key=f"aviso_{key_name}_{current_op['id']}")
+
+    if pdf_fac:
+        data_extracted = extract_factura_e(pdf_fac)
+        current_op.update(data_extracted)
+        st.toast("Factura E leída e inyectada", icon="📄")
+
+    if pdf_swift:
+        data_sw = extract_swift(pdf_swift)
+        sub_data.update(data_sw)
+        st.toast("SWIFT leído e inyectado", icon="📄")
+
+    if pdf_aviso:
+        data_av = extract_aviso(pdf_aviso)
+        sub_data.update(data_av)
+        st.toast("Aviso de Crédito leído e inyectado", icon="📄")
+
+    # Campos Editables
+    col_a, col_b, col_c, col_d, col_e, col_f, col_g, col_h = st.columns(8)
+    sub_data["fecha"] = col_a.text_input("Fecha Acred.", sub_data["fecha"], key=f"f_{key_name}_{current_op['id']}")
+    sub_data["swift_usd"] = col_b.number_input("Swift USD", value=float(sub_data["swift_usd"]), key=f"sw_{key_name}_{current_op['id']}")
+    sub_data["gasto_swift"] = col_c.number_input("Gasto Swift USD", value=float(sub_data["gasto_swift"]), key=f"gw_{key_name}_{current_op['id']}")
+    sub_data["tc_liq"] = col_d.number_input("T.C. Liq.", value=float(sub_data["tc_liq"]), key=f"tc_{key_name}_{current_op['id']}")
+    sub_data["comision"] = col_e.number_input("Comisión $", value=float(sub_data["comision"]), key=f"cm_{key_name}_{current_op['id']}")
+    sub_data["rg"] = col_f.number_input("RG 2408 $", value=float(sub_data["rg"]), key=f"rg_{key_name}_{current_op['id']}")
+    sub_data["iva"] = col_g.number_input("IVA 21% $", value=float(sub_data["iva"]), key=f"iva_{key_name}_{current_op['id']}")
+    sub_data["acreditado"] = col_h.number_input("Acreditado $", value=float(sub_data["acreditado"]), key=f"ac_{key_name}_{current_op['id']}")
+
+render_section("Anticipo", "anticipo")
+render_section("Restante", "restante")
+
+# Auto-guardado
+save_data()
+
+# ---------------------------------------------------------
+# MÉTRICAS Y RESULTADOS FINANCIEROS
+# ---------------------------------------------------------
 st.divider()
+ant = current_op["anticipo"]
+res = current_op["restante"]
 
-st.markdown("### 2. Conciliación Bancaria y Liquidación")
-# Pestañas para dividir el flujo de caja
-tab_anticipo, tab_restante, tab_resumen = st.tabs(["Ingreso Anticipo", "Ingreso Restante", "Resumen Final"])
+neto_usd_ant = ant["swift_usd"] - ant["gasto_swift"]
+neto_usd_res = res["swift_usd"] - res["gasto_swift"]
 
-def calcular_neto(monto, swift, comision, iva, tc):
-    gastos_usd = swift + comision + iva
-    neto_usd = monto - gastos_usd
-    neto_ars = neto_usd * tc
-    return gastos_usd, neto_usd, neto_ars
+result_fin_ant = neto_usd_ant * (ant["tc_liq"] - current_op["tc_factura"]) if current_op["tc_factura"] > 0 else 0.0
+result_fin_res = neto_usd_res * (res["tc_liq"] - current_op["tc_factura"]) if current_op["tc_factura"] > 0 else 0.0
+total_result_fin = result_fin_ant + result_fin_res
 
-with tab_anticipo:
-    col_a1, col_a2 = st.columns(2)
-    with col_a1:
-        monto_anticipo = st.number_input("Monto Bruto Recibido (USD) - Anticipo", min_value=0.0, step=100.0)
-        tc_anticipo = st.number_input("Tipo de Cambio Liquidación Anticipo", min_value=0.0, format="%.2f")
-    with col_a2:
-        swift_anticipo = st.number_input("Gastos SWIFT (USD) - Anticipo", min_value=0.0, step=10.0)
-        comision_anticipo = st.number_input("Comisión Bancaria (USD) - Anticipo", min_value=0.0, step=10.0)
-        iva_anticipo = st.number_input("IVA sobre Comisiones (USD) - Anticipo", min_value=0.0, step=5.0)
+m1, m2, m3, m4 = st.columns(4)
+total_swift = ant["swift_usd"] + res["swift_usd"]
+pct_cobrado = (total_swift / current_op["importe_usd"] * 100) if current_op["importe_usd"] > 0 else 0.0
 
-with tab_restante:
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        monto_restante = st.number_input("Monto Bruto Recibido (USD) - Restante", value=float(importe_total - monto_anticipo), min_value=0.0, step=100.0)
-        tc_restante = st.number_input("Tipo de Cambio Liquidación Restante", min_value=0.0, format="%.2f")
-    with col_r2:
-        swift_restante = st.number_input("Gastos SWIFT (USD) - Restante", min_value=0.0, step=10.0)
-        comision_restante = st.number_input("Comisión Bancaria (USD) - Restante", min_value=0.0, step=10.0)
-        iva_restante = st.number_input("IVA sobre Comisiones (USD) - Restante", min_value=0.0, step=5.0)
+m1.metric("% Cobrado", f"{pct_cobrado:.2f}%")
+m2.metric("Saldo Pendiente USD", f"US$ {max(0.0, current_op['importe_usd'] - total_swift):,.2f}")
+m3.metric("Resultado Financiero", f"$ {total_result_fin:,.2f}", delta=f"{total_result_fin:,.2f}")
+m4.metric("Total Acreditado $", f"$ {(ant['acreditado'] + res['acreditado']):,.2f}")
 
-with tab_resumen:
-    gastos_ant, neto_usd_ant, neto_ars_ant = calcular_neto(monto_anticipo, swift_anticipo, comision_anticipo, iva_anticipo, tc_anticipo)
-    gastos_rest, neto_usd_rest, neto_ars_rest = calcular_neto(monto_restante, swift_restante, comision_restante, iva_restante, tc_restante)
-    
-    st.markdown("#### Desglose de Operación")
-    
-    df_resumen = pd.DataFrame({
-        "Concepto": ["Anticipo", "Restante", "TOTAL"],
-        "Ingreso Bruto (USD)": [monto_anticipo, monto_restante, monto_anticipo + monto_restante],
-        "Gastos Bancarios (USD)": [gastos_ant, gastos_rest, gastos_ant + gastos_rest],
-        "Liquidación Neta (USD)": [neto_usd_ant, neto_usd_rest, neto_usd_ant + neto_usd_rest],
-        "Liquidación Neta (ARS)": [neto_ars_ant, neto_ars_rest, neto_ars_ant + neto_ars_rest]
-    })
-    
-    st.dataframe(df_resumen.style.format({
-        "Ingreso Bruto (USD)": "${:,.2f}",
-        "Gastos Bancarios (USD)": "${:,.2f}",
-        "Liquidación Neta (USD)": "${:,.2f}",
-        "Liquidación Neta (ARS)": "${:,.2f}"
-    }), use_container_width=True)
-    
-    if (monto_anticipo + monto_restante) > importe_total:
-        st.error(f"⚠️ El monto cobrado ({monto_anticipo + monto_restante} USD) supera el total de la factura ({importe_total} USD).")
+# ---------------------------------------------------------
+# BOTÓN DE EXPORTACIÓN EN PDF
+# ---------------------------------------------------------
+st.divider()
+pdf_bytes = generate_pdf_report(current_op)
+st.download_button(
+    label="📥 Exportar Informe en PDF",
+    data=pdf_bytes,
+    file_name=f"Conciliacion_{current_op['factura_nro'] or 'SN'}.pdf",
+    mime="application/pdf"
+)
