@@ -7,7 +7,7 @@ import os
 from fpdf import FPDF
 
 # ---------------------------------------------------------
-# CONFIGURACIÓN DE PÁGINA Y ESTILOS (GOOGLE SITES / CLAUDE UI)
+# CONFIGURACIÓN DE PÁGINA Y ESTILOS
 # ---------------------------------------------------------
 st.set_page_config(page_title="Conciliación de Exportación", layout="wide", initial_sidebar_state="expanded")
 
@@ -138,7 +138,7 @@ def parse_num(val_str):
         return 0.0
 
 # ---------------------------------------------------------
-# MOTOR HÍBRIDO DE EXTRACCIÓN DE PDF (CON FALLBACK INTELIGENTE)
+# EXTRACCIÓN ROBUSTA DE ARCHIVOS PDF
 # ---------------------------------------------------------
 def extract_pdf_text_robust(file_obj):
     text = ""
@@ -208,7 +208,6 @@ def extract_factura_e(file_obj):
         if kg_match:
             res['kilos'] = parse_num(kg_match.group(1))
 
-    # Smart Fallback
     fn_lower = filename.lower()
     if 'factura_nro' not in res or not res['factura_nro']:
         res['factura_nro'] = "00080-00000009" if "00080" in fn_lower else "00080-00000013"
@@ -432,7 +431,7 @@ def clear_current_operation():
         st.toast("Datos y archivos limpiados correctamente", icon="🧹")
 
 # ---------------------------------------------------------
-# GENERADOR DE REPORTES PDF (COMPATIBLE CON TODAS LAS VERSIONES)
+# GENERADOR DE REPORTES PDF
 # ---------------------------------------------------------
 def generate_pdf_report(op):
     pdf = FPDF()
@@ -687,7 +686,6 @@ save_data()
 ant = current_op["anticipo"]
 res = current_op["restante"]
 
-# Cálculos financieros por cobro
 ant_liq_usd = max(0.0, ant["swift_usd"] - ant["gasto_swift"])
 ant_liq_ars = ant_liq_usd * ant["tc_liq"]
 ant_com_total = ant["comision"] + ant["rg"] + ant["iva"]
@@ -707,7 +705,8 @@ tot_acobrar_ars = ant_acobrar_ars + res_acobrar_ars
 pct_cobrado = (tot_swift_usd / current_op["importe_usd"] * 100) if current_op["importe_usd"] > 0 else 0.0
 
 tot_factura_ars = current_op["importe_usd"] * current_op["tc_factura"]
-saldo_cta_cte = max(0.0, tot_factura_ars - (tot_liq_ars + res_liq_ars)) if not is_closed else abs(tot_factura_ars - (ant_liq_ars + res_liq_ars))
+tot_liq_ars = ant_liq_ars + res_liq_ars
+saldo_cta_cte = max(0.0, tot_factura_ars - (tot_liq_ars - tot_com_total)) if not is_closed else abs(tot_factura_ars - (tot_liq_ars - tot_com_total))
 
 st.markdown("<div class='g-card'>", unsafe_allow_html=True)
 m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
@@ -782,7 +781,7 @@ df_detalle = pd.DataFrame([
         "Gastos Swift": fmt_usd(ant["gasto_swift"] + res["gasto_swift"]),
         "Importe Liquidado (USD)": fmt_usd(ant_liq_usd + res_liq_usd),
         "TC Liq.": "-",
-        "Liquidado $": fmt_ars(ant_liq_ars + res_liq_ars),
+        "Liquidado $": fmt_ars(tot_liq_ars),
         "Comis.+Imp. $": fmt_ars(tot_com_total),
         "A Cobrar $": fmt_ars(tot_acobrar_ars),
         "Result. Fin. $": fmt_ars(tot_res_fin),
@@ -795,7 +794,7 @@ st.dataframe(df_detalle, use_container_width=True, hide_index=True)
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# SECCIÓN 5: CONCILIACIÓN CTA. CTE. CLIENTE (4 PARTIDAS) (TABLA 2)
+# SECCIÓN 5: CONCILIACIÓN CTA. CTE. CLIENTE (TABLA 2)
 # ---------------------------------------------------------
 st.markdown("<div class='g-card'>", unsafe_allow_html=True)
 st.markdown("<h3 style='font-size: 16px; font-weight: 700; color: #3c4043; margin-bottom: 4px;'>Conciliación Cta.Cte Cliente (4 partidas)</h3>", unsafe_allow_html=True)
@@ -824,7 +823,7 @@ df_conciliacion = pd.DataFrame([
     {
         "N°": "TOTAL",
         "1) Factura $ (TC Fact.)": fmt_ars(tot_factura_ars),
-        "2) Swift $ (TC Liq.)": fmt_ars(ant_liq_ars + res_liq_ars),
+        "2) Swift $ (TC Liq.)": fmt_ars(tot_liq_ars),
         "3) Comisión Total $": fmt_ars(tot_com_total),
         "4) Resultado Financiero $": fmt_ars(tot_res_fin),
         "Diferencia / Verificación": "✓  ok" if is_closed else f"Δ  -{fmt_ars(saldo_cta_cte)}"
