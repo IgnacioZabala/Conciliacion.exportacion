@@ -365,7 +365,6 @@ def clear_current_operation():
             st.session_state[f"iva_{key_name}_{oid}"] = 0.0
             st.session_state[f"ac_{key_name}_{oid}"] = 0.0
             
-            # ELIMINAR LOS ARCHIVOS PDF CARGADOS EN LOS UPLOADERS
             for up_type in ["fac", "swift", "aviso"]:
                 up_key = f"uploader_{up_type}_{key_name}_{oid}"
                 if up_key in st.session_state:
@@ -415,8 +414,12 @@ def generate_pdf_report(op):
         
         sw_usd = p.get("swift_usd", 0.0)
         tc_liq = p.get("tc_liq", 0.0)
-        tot_op_ars = sw_usd * tc_liq
         
+        # Total operacion es el importe acreditado del aviso de crédito (o calculado si no está)
+        tot_op_ars = p.get("acreditado", 0.0)
+        if tot_op_ars == 0.0:
+            tot_op_ars = sw_usd * tc_liq
+
         pdf.set_font("Helvetica", "", 10)
         pdf.cell(0, 6.5, f"Total operacion: {fmt_ars(tot_op_ars)} (USD {fmt_usd(sw_usd)})", ln=True)
         
@@ -424,20 +427,23 @@ def generate_pdf_report(op):
         rg = p.get("rg", 0.0)
         iva = p.get("iva", 0.0)
         tot_gastos = com + rg + iva
+        
+        # Resultado financiero: (tc_liq - tc_factura) * monto operacion (archivo swift)
         res_fin = sw_usd * (tc_liq - tc_fac) if (tc_fac > 0 and tc_liq > 0) else 0.0
         
-        # Punto 1: Swift × TC Aviso de Crédito
-        pdf.cell(115, 6.5, f"1- Importe Operacion (Swift x TC): {fmt_ars(tot_op_ars)}", ln=False)
+        # 1- Swift: monto (swift * tc_liq)
+        swift_calc = sw_usd * tc_liq
+        pdf.cell(115, 6.5, f"1- Swift: {fmt_ars(swift_calc)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
 
-        # Punto 2: Gastos de Transacción
+        # 2- Gastos de Transaccion
         pdf.cell(115, 6.5, f"2- Gastos de Transaccion: {fmt_ars(tot_gastos)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
 
         pdf.set_font("Helvetica", "I", 9.5)
         pdf.cell(0, 5.5, f"(Comision: {fmt_ars(com)} | RG2408: {fmt_ars(rg)} | IVA: {fmt_ars(iva)})", ln=True)
         
-        # Punto 3: Resultado Financiero
+        # 3- Resultado financiero
         pdf.set_font("Helvetica", "", 10)
         pdf.cell(115, 6.5, f"3- Resultado financiero: {fmt_ars(res_fin)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
@@ -644,16 +650,16 @@ ant = current_op["anticipo"]
 res = current_op["restante"]
 
 ant_liq_usd = max(0.0, ant["swift_usd"] - ant["gasto_swift"])
-ant_liq_ars = ant_liq_usd * ant["tc_liq"]
+ant_liq_ars = ant["acreditado"] if ant["acreditado"] > 0 else (ant_liq_usd * ant["tc_liq"])
 ant_com_total = ant["comision"] + ant["rg"] + ant["iva"]
 ant_acobrar_ars = ant_liq_ars - ant_com_total
-ant_res_fin = ant_liq_usd * (ant["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and ant["tc_liq"] > 0) else 0.0
+ant_res_fin = ant["swift_usd"] * (ant["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and ant["tc_liq"] > 0) else 0.0
 
 res_liq_usd = max(0.0, res["swift_usd"] - res["gasto_swift"])
-res_liq_ars = res_liq_usd * res["tc_liq"]
+res_liq_ars = res["acreditado"] if res["acreditado"] > 0 else (res_liq_usd * res["tc_liq"])
 res_com_total = res["comision"] + res["rg"] + res["iva"]
 res_acobrar_ars = res_liq_ars - res_com_total
-res_res_fin = res_liq_usd * (res["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and res["tc_liq"] > 0) else 0.0
+res_res_fin = res["swift_usd"] * (res["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and res["tc_liq"] > 0) else 0.0
 
 tot_swift_usd = ant["swift_usd"] + res["swift_usd"]
 tot_com_total = ant_com_total + res_com_total
@@ -738,7 +744,7 @@ df_detalle = pd.DataFrame([
         "Gastos Swift": fmt_usd(ant["gasto_swift"] + res["gasto_swift"]),
         "Importe Liquidado (USD)": fmt_usd(ant_liq_usd + res_liq_usd),
         "TC Liq.": "-",
-        "Liquidado $": fmt_ars(tot_liq_ars),
+        "Liquidado $": fmt_ars(ant_liq_ars + res_liq_ars),
         "Comis.+Imp. $": fmt_ars(tot_com_total),
         "A Cobrar $": fmt_ars(tot_acobrar_ars),
         "Result. Fin. $": fmt_ars(tot_res_fin),
