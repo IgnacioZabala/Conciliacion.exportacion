@@ -365,6 +365,7 @@ def clear_current_operation():
             st.session_state[f"iva_{key_name}_{oid}"] = 0.0
             st.session_state[f"ac_{key_name}_{oid}"] = 0.0
             
+            # ELIMINAR LOS ARCHIVOS PDF CARGADOS EN LOS UPLOADERS
             for up_type in ["fac", "swift", "aviso"]:
                 up_key = f"uploader_{up_type}_{key_name}_{oid}"
                 if up_key in st.session_state:
@@ -374,7 +375,7 @@ def clear_current_operation():
         st.toast("Datos y archivos limpiados correctamente", icon="🧹")
 
 # ---------------------------------------------------------
-# GENERADOR DE REPORTES PDF (CON TÍTULO CENTRADO)
+# GENERADOR DE REPORTES PDF
 # ---------------------------------------------------------
 def generate_pdf_report(op):
     pdf = FPDF()
@@ -383,17 +384,17 @@ def generate_pdf_report(op):
 
     tc_fac = op.get('tc_factura', 0.0)
     imp_usd = op.get('importe_usd', 0.0)
-    nombre_exp = op.get('nombre', 'Exportación')
 
-    # Título centrado con el nombre de la exportación
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, nombre_exp, ln=True, align='C')
-    pdf.ln(3)
+    # Título Principal Centrado con el Nombre de la Exportación
+    nombre_exportacion = op.get('nombre', 'Exportación')
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.cell(0, 10, nombre_exportacion, ln=True, align='C')
+    pdf.ln(2)
 
     pdf.set_font("Helvetica", "B", 13)
-    pdf.cell(0, 7, "Datos de la Factura", ln=True)
+    pdf.cell(0, 8, "Datos de la Factura", ln=True)
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 6, f"Conciliacion de Exportacion: {op.get('factura_nro', 'S/N')}", ln=True)
+    pdf.cell(0, 7, f"Conciliacion de Exportacion: {op.get('factura_nro', 'S/N')}", ln=True)
     pdf.ln(2)
 
     pdf.set_font("Helvetica", "", 10.5)
@@ -425,15 +426,18 @@ def generate_pdf_report(op):
         tot_gastos = com + rg + iva
         res_fin = sw_usd * (tc_liq - tc_fac) if (tc_fac > 0 and tc_liq > 0) else 0.0
         
-        pdf.cell(115, 6.5, f"1- Comision: {fmt_ars(com)}", ln=False)
+        # Punto 1: Swift × TC Aviso de Crédito
+        pdf.cell(115, 6.5, f"1- Importe Operacion (Swift x TC): {fmt_ars(tot_op_ars)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
 
+        # Punto 2: Gastos de Transacción
         pdf.cell(115, 6.5, f"2- Gastos de Transaccion: {fmt_ars(tot_gastos)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
 
         pdf.set_font("Helvetica", "I", 9.5)
         pdf.cell(0, 5.5, f"(Comision: {fmt_ars(com)} | RG2408: {fmt_ars(rg)} | IVA: {fmt_ars(iva)})", ln=True)
         
+        # Punto 3: Resultado Financiero
         pdf.set_font("Helvetica", "", 10)
         pdf.cell(115, 6.5, f"3- Resultado financiero: {fmt_ars(res_fin)}", ln=False)
         pdf.cell(0, 6.5, "Fecha: ...../...../.........   Asiento: ...............", ln=True)
