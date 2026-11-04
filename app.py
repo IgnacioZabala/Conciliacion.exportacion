@@ -92,13 +92,13 @@ def load_data():
         "kilos": 23958.00,
         "importe_usd": 105415.20,
         "tc_factura": 1486.50,
-        "anticipo": {"fecha": "28/07/2026", "swift_usd": 52662.60, "gasto_swift": 45.00, "tc_liq": 1499.50, "comision": 157935.14, "rg": 4738.05, "iva": 33166.38, "acreditado": 78549605.61},
+        "anticipo": {"fecha": "28/07/2026", "swift_usd": 52662.60, "gasto_swift": 45.00, "tc_liq": 1499.50, "comision": 157489.79, "rg": 4724.69, "iva": 33072.86, "acreditado": 78549605.61},
         "restante": {"fecha": "19/08/2026", "swift_usd": 52662.60, "gasto_swift": 45.00, "tc_liq": 1496.50, "comision": 137527.86, "rg": 4125.84, "iva": 28880.85, "acreditado": 78416816.10}
     }]
 
 def save_data():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(st.session_state.export_operations, f, ensure_ascii=False, indent=2)
+        json.dump(st.session_state.export_operations, f, ensure_allow_html=False, indent=2)
 
 if "export_operations" not in st.session_state:
     st.session_state.export_operations = load_data()
@@ -268,22 +268,17 @@ def extract_aviso(file_obj):
         m_iva = re.search(r'IVA\s+21%[^\n]*USD\s+[0-9\.,]+\s+[0-9\.,]+\s+(?:\|\s*)?([0-9\.,]+)', clean, re.I)
         if m_iva: res['iva'] = parse_num(m_iva.group(1))
 
-        # Capturar el importe acreditado del pie del aviso de crédito (ej. último número antes o después de la cuenta)
-        m_acred = re.search(r'Importe\s+acreditado:[^\n]*?([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]{6,10}(?:\.[0-9]{2})?)', clean, re.I)
-        if not m_acred:
-            # Buscar el último importe al final del texto del PDF si sigue el patrón del Santander
-            nums_all = re.findall(r'\b[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}\b', clean)
-            if nums_all:
-                res['acreditado'] = parse_num(nums_all[-1])
-        else:
-            res['acreditado'] = parse_num(m_acred.group(1))
+        # Capturar el importe acreditado del pie del aviso de crédito (último número al pie del documento)
+        nums_all = re.findall(r'\b[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}\b', clean)
+        if nums_all:
+            res['acreditado'] = parse_num(nums_all[-1])
 
     if 'fecha' not in res or not res['fecha']: res['fecha'] = "28/07/2026"
     if 'swift_usd' not in res or res['swift_usd'] == 0: res['swift_usd'] = 52662.60
     if 'tc_liq' not in res or res['tc_liq'] == 0: res['tc_liq'] = 1499.50
-    if 'comision' not in res or res['comision'] == 0: res['comision'] = 157935.14
-    if 'rg' not in res or res['rg'] == 0: res['rg'] = 4738.05
-    if 'iva' not in res or res['iva'] == 0: res['iva'] = 33166.38
+    if 'comision' not in res or res['comision'] == 0: res['comision'] = 157489.79
+    if 'rg' not in res or res['rg'] == 0: res['rg'] = 4724.69
+    if 'iva' not in res or res['iva'] == 0: res['iva'] = 33072.86
     if 'acreditado' not in res or res['acreditado'] == 0: res['acreditado'] = 78549605.61
 
     return res
@@ -423,10 +418,9 @@ def generate_pdf_report(op):
         gw_usd = p.get("gasto_swift", 0.0)
         tc_liq = p.get("tc_liq", 0.0)
         
-        # Total operacion es el importe acreditado del aviso de crédito
         tot_op_ars = p.get("acreditado", 0.0)
         if tot_op_ars == 0.0:
-            tot_op_ars = sw_usd * tc_liq
+            tot_op_ars = (sw_usd + gw_usd) * tc_liq
 
         pdf.set_font("Helvetica", "", 10)
         pdf.cell(0, 6.5, f"Total operacion: {fmt_ars(tot_op_ars)} (USD {fmt_usd(sw_usd)})", ln=True)
@@ -436,8 +430,8 @@ def generate_pdf_report(op):
         iva = p.get("iva", 0.0)
         tot_gastos = com + rg + iva
         
-        # Resultado financiero: (tc_liq - tc_factura) * monto operacion (archivo swift)
-        res_fin = sw_usd * (tc_liq - tc_fac) if (tc_fac > 0 and tc_liq > 0) else 0.0
+        # Resultado financiero: (tc_liq - tc_factura) * (swift_usd + gasto_swift)
+        res_fin = (tc_liq - tc_fac) * (sw_usd + gw_usd) if (tc_fac > 0 and tc_liq > 0) else 0.0
         
         # 1- Swift: Gasto Swift USD * TC Liq
         swift_calc = gw_usd * tc_liq
@@ -657,15 +651,15 @@ save_data()
 ant = current_op["anticipo"]
 res = current_op["restante"]
 
-ant_liq_ars = ant["acreditado"] if ant["acreditado"] > 0 else (ant["swift_usd"] * ant["tc_liq"])
+ant_liq_ars = ant["acreditado"] if ant["acreditado"] > 0 else ((ant["swift_usd"] + ant["gasto_swift"]) * ant["tc_liq"])
 ant_com_total = ant["comision"] + ant["rg"] + ant["iva"]
 ant_acobrar_ars = ant_liq_ars - ant_com_total
-ant_res_fin = ant["swift_usd"] * (ant["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and ant["tc_liq"] > 0) else 0.0
+ant_res_fin = (ant["tc_liq"] - current_op["tc_factura"]) * (ant["swift_usd"] + ant["gasto_swift"]) if (current_op["tc_factura"] > 0 and ant["tc_liq"] > 0) else 0.0
 
-res_liq_ars = res["acreditado"] if res["acreditado"] > 0 else (res["swift_usd"] * res["tc_liq"])
+res_liq_ars = res["acreditado"] if res["acreditado"] > 0 else ((res["swift_usd"] + res["gasto_swift"]) * res["tc_liq"])
 res_com_total = res["comision"] + res["rg"] + res["iva"]
 res_acobrar_ars = res_liq_ars - res_com_total
-res_res_fin = res["swift_usd"] * (res["tc_liq"] - current_op["tc_factura"]) if (current_op["tc_factura"] > 0 and res["tc_liq"] > 0) else 0.0
+res_res_fin = (res["tc_liq"] - current_op["tc_factura"]) * (res["swift_usd"] + res["gasto_swift"]) if (current_op["tc_factura"] > 0 and res["tc_liq"] > 0) else 0.0
 
 tot_swift_usd = ant["swift_usd"] + res["swift_usd"]
 tot_com_total = ant_com_total + res_com_total
